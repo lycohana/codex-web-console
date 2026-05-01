@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_auth:
+        description: npm publish authentication mode
+        required: true
+        default: oidc
+        type: choice
+        options:
+          - oidc
+          - npm-token
+      release_now:
+        description: set to true to allow manual npm publish
+        required: true
+        default: false
+        type: boolean
+      release_version:
+        description: exact package version to publish manually, for example 1.0.1
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+          registry-url: https://registry.npmjs.org
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@^11.5.1
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Verify project
+        run: |
+          bun run check
+          bun run build
+
+      - name: Validate manual publish inputs
+        run: |
+          if [ "${{ inputs.release_now }}" != "true" ]; then
+            echo "Manual publish skipped because release_now is not true."
+            exit 0
+          fi
+          if [ -z "${{ inputs.release_version }}" ]; then
+            echo "::error::release_version is required when release_now=true."
+            exit 1
+          fi
+          node -e "const v='${{ inputs.release_version }}'; if(!/^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$/.test(v)){ console.error('Invalid semver:', v); process.exit(1); }"
+
+      - name: Publish specified version to npm
+        if: inputs.release_now == true
+        env:
+          NPM_TOKEN: ${{ inputs.publish_auth == 'npm-token' && secrets.NPM_TOKEN || '' }}
+          NODE_AUTH_TOKEN: ${{ inputs.publish_auth == 'npm-token' && secrets.NPM_TOKEN || '' }}
+        run: |
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          TARGET_VERSION="${{ inputs.release_version }}"
+          echo "Preparing ${PACKAGE_NAME}@${TARGET_VERSION}"
+          if npm view "${PACKAGE_NAME}@${TARGET_VERSION}" version --registry=https://registry.npmjs.org > /dev/null 2>&1; then
+            echo "::error::${PACKAGE_NAME}@${TARGET_VERSION} already exists on npm."
+            exit 1
+          fi
+          npm pkg set version="${TARGET_VERSION}"
+          npm publish
