@@ -490,20 +490,6 @@ function normalizeTimelineEntry(item: ThreadItem): TimelineEntry {
 			};
 		}
 		case 'agentMessage': {
-			// If this agentMessage has tool fields, treat it as a tool call.
-			// Some Codex builds wrap tool_invocations inside agentMessage items.
-			const hasToolData = !!(
-				readString(item.toolName) ??
-				readString(item.name) ??
-				readString(item.functionName) ??
-				readString(item.function) ??
-				readJsonText(item.arguments) ??
-				readJsonText(item.args) ??
-				readJsonText(item.tool)
-			);
-			if (hasToolData) {
-				return normalizeToolCall(item);
-			}
 			const assistantImages = Array.isArray(item.content) ? readImageUrls(item.content) : [];
 			return {
 				id: item.id,
@@ -634,17 +620,6 @@ function normalizeTimelineEntry(item: ThreadItem): TimelineEntry {
 				text: 'Codex compacted the thread context.'
 			};
 		default:
-			// Fallback: detect tool calls by fields even for unrecognized types.
-			const maybeTool = !!(
-				readString(item.toolName) ??
-				readString(item.name) ??
-				readString(item.functionName) ??
-				readJsonText(item.arguments) ??
-				readJsonText(item.args)
-			);
-			if (maybeTool) {
-				return normalizeToolCall(item);
-			}
 			return {
 				id: item.id,
 				kind: 'system',
