@@ -884,7 +884,6 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			threadId,
 			{
 				...patch,
-				streaming: true,
 				[field]: `${typeof queuedValue === 'string' ? queuedValue : (currentValue ?? '')}${delta}`
 			},
 			defaults
@@ -967,7 +966,9 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	}
 
 	function hasRenderableLiveEntry(entry: TimelineEntry) {
-		return !isRuntimeOnlyEntry(entry) || hasRuntimeReasoningContent(entry);
+		if (entry.kind === 'reasoning') { return hasRuntimeReasoningContent(entry); }
+		if (entry.kind === 'assistant' && !(entry.text?.trim() || entry.images?.length || entry.changes?.length)) return false;
+		return true
 	}
 
 	function normalizedEntryContent(entry: TimelineEntry) {
@@ -1233,8 +1234,10 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		const next = Object.fromEntries(
 			Object.entries(entries).flatMap(([itemId, entry]) => {
 				if (entry.turnId !== turnId || entry.completedAt) return [[itemId, entry]];
+				if (entry.kind === "reasoning") { changed = true; return []; }
 				changed = true;
-				return [];
+				const completedAt = Date.now();
+				return [[itemId, mergeEntry(entry, { status: entry.kind === "command" ? "completed" : entry.status, completedAt, durationMs: entry.startedAt ? completedAt - entry.startedAt : entry.durationMs })]];
 			})
 		);
 		if (!changed) return;
@@ -1722,7 +1725,6 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			const startedAt = event.item.startedAt ?? current?.startedAt ?? null;
 			queueLiveEntryUpdate(event.item.id, event.threadId, {
 				...event.item,
-				streaming: false,
 				turnId: event.turnId,
 				startedAt,
 				completedAt,

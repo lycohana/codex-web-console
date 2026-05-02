@@ -482,11 +482,7 @@
 			</details>
 		{:else}
 			{#if entry.text}
-				{#if entry.streaming}
-					<pre class="streaming-text">{entry.text}</pre>
-				{:else}
-					<div class="markdown">{@html renderMarkdown(autoLinkStandaloneImages(entry.text), cwd)}</div>
-				{/if}
+				<div class="markdown">{@html renderMarkdown(autoLinkStandaloneImages(entry.text), cwd)}</div>
 			{/if}
 			{#if entry.images && entry.images.length > 0}
 				<div class="timeline-image-strip">
