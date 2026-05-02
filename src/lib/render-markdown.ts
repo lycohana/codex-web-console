@@ -26,12 +26,21 @@ const allowedTags = [
 	'h4',
 	'h5',
 	'h6',
-	'hr'
+	'hr',
+	'table',
+	'thead',
+	'tbody',
+	'tr',
+	'th',
+	'td'
 ];
 
 const allowedAttributes = {
 	a: ['href', 'target', 'rel'],
-	img: ['src', 'alt', 'title', 'width', 'height', 'loading']
+	img: ['src', 'alt', 'title', 'width', 'height', 'loading'],
+	table: ['border'],
+	th: ['align', 'scope'],
+	td: ['align']
 };
 
 const cache = new Map<string, string>();

@@ -490,6 +490,20 @@ function normalizeTimelineEntry(item: ThreadItem): TimelineEntry {
 			};
 		}
 		case 'agentMessage': {
+			// If this agentMessage has tool fields, treat it as a tool call.
+			// Some Codex builds wrap tool_invocations inside agentMessage items.
+			const hasToolData = !!(
+				readString(item.toolName) ??
+				readString(item.name) ??
+				readString(item.functionName) ??
+				readString(item.function) ??
+				readJsonText(item.arguments) ??
+				readJsonText(item.args) ??
+				readJsonText(item.tool)
+			);
+			if (hasToolData) {
+				return normalizeToolCall(item);
+			}
 			const assistantImages = Array.isArray(item.content) ? readImageUrls(item.content) : [];
 			return {
 				id: item.id,
@@ -545,6 +559,11 @@ function normalizeTimelineEntry(item: ThreadItem): TimelineEntry {
 		case 'tool_call':
 		case 'function_call':
 		case 'functionCall':
+		case 'customTool':
+		case 'custom_tool':
+		case 'custom-tool':
+		case 'mcpTool':
+		case 'mcp_tool':
 			return normalizeToolCall(item);
 		case 'imageGeneration':
 		case 'image_generation':
@@ -615,6 +634,17 @@ function normalizeTimelineEntry(item: ThreadItem): TimelineEntry {
 				text: 'Codex compacted the thread context.'
 			};
 		default:
+			// Fallback: detect tool calls by fields even for unrecognized types.
+			const maybeTool = !!(
+				readString(item.toolName) ??
+				readString(item.name) ??
+				readString(item.functionName) ??
+				readJsonText(item.arguments) ??
+				readJsonText(item.args)
+			);
+			if (maybeTool) {
+				return normalizeToolCall(item);
+			}
 			return {
 				id: item.id,
 				kind: 'system',
@@ -766,6 +796,8 @@ class LocalCodexService {
 	private buffer = '';
 	private requestId = 1;
 	private startPromise: Promise<void> | null = null;
+
+	private warmupPromise: Promise<void> | null = null;
 	private pendingRequests = new Map<
 		number,
 		{
@@ -1101,6 +1133,16 @@ class LocalCodexService {
 		} finally {
 			this.startPromise = null;
 		}
+	}
+
+	/**
+	 * Fire-and-forget pre-warm: starts the codex process in the background
+	 * so the first real request doesn't pay spawn + handshake latency.
+	 */
+	public warmup(): void {
+		if (this.process || this.startPromise) return;
+		this.startPromise = this.start();
+		this.startPromise.catch(() => {}).finally(() => { this.startPromise = null; });
 	}
 
 	private async start(): Promise<void> {
@@ -1451,4 +1493,10 @@ class LocalCodexService {
 	}
 }
 
-export const codex = new LocalCodexService();
+const codex = new LocalCodexService();
+
+// Preemptively warm the codex process at module load so the
+// first user-facing request doesn't pay the spawn + handshake cost.
+codex.warmup();
+
+export { codex };

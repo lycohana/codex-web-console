@@ -108,6 +108,7 @@
 	}
 
 	function isInlineFoldableWork(entry: TimelineEntry) {
+		if (entry.kind === 'assistant' && entry.phase === 'commentary') return true;
 		return (
 			entry.kind === 'reasoning' ||
 			entry.kind === 'command' ||
@@ -481,7 +482,11 @@
 			</details>
 		{:else}
 			{#if entry.text}
-				<div class="markdown">{@html renderMarkdown(autoLinkStandaloneImages(entry.text), cwd)}</div>
+				{#if entry.streaming}
+					<pre class="streaming-text">{entry.text}</pre>
+				{:else}
+					<div class="markdown">{@html renderMarkdown(autoLinkStandaloneImages(entry.text), cwd)}</div>
+				{/if}
 			{/if}
 			{#if entry.images && entry.images.length > 0}
 				<div class="timeline-image-strip">
@@ -638,6 +643,7 @@
 	{/each}
 
 	{#if liveEntries.length > 0}
+		{@const liveBatches = buildInlineBatches(liveEntries)}
 		<section class="turn">
 			<div class="turn-meta">
 				<span class="dot" style:background={liveIsRunning ? 'var(--success)' : 'var(--ink-faint)'}></span>
@@ -645,8 +651,15 @@
 				<span>{liveIsRunning ? 'running' : 'settled'}</span>
 			</div>
 
-			{#each liveEntries as entry (entry.id)}
-				{@render renderEntry(entry)}
+			{#each liveEntries as entry, index (entry.id)}
+				{@const batch = batchAt(liveBatches, index)}
+				{#if batch}
+					{@render renderWorkCollapse(batch.entries, batch.summary, batch.duration, '')}
+				{/if}
+
+				{#if !isInlineFoldableWork(entry)}
+					{@render renderEntry(entry)}
+				{/if}
 			{/each}
 		</section>
 	{/if}

@@ -66,6 +66,7 @@ export interface TimelineEntry {
 	status?: string | null;
 	startedAt?: number | null;
 	completedAt?: number | null;
+	streaming?: boolean;
 	durationMs?: number | null;
 	changes?: Array<{
 		path: string;

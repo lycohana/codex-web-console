@@ -884,6 +884,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			threadId,
 			{
 				...patch,
+				streaming: true,
 				[field]: `${typeof queuedValue === 'string' ? queuedValue : (currentValue ?? '')}${delta}`
 			},
 			defaults
@@ -1229,25 +1230,11 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		flushQueuedLiveEntryUpdates();
 		const entries = threadId === selectedThreadId ? liveEntries : (liveEntryBuffers[threadId] ?? {});
 		let changed = false;
-		const completedAt = Date.now();
 		const next = Object.fromEntries(
 			Object.entries(entries).flatMap(([itemId, entry]) => {
 				if (entry.turnId !== turnId || entry.completedAt) return [[itemId, entry]];
-				if (entry.kind === 'reasoning') {
-					changed = true;
-					return [];
-				}
 				changed = true;
-				return [
-					[
-						itemId,
-						mergeEntry(entry, {
-							status: entry.kind === 'command' ? 'completed' : entry.status,
-							completedAt,
-							durationMs: entry.startedAt ? completedAt - entry.startedAt : entry.durationMs
-						})
-					]
-				];
+				return [];
 			})
 		);
 		if (!changed) return;
@@ -1276,6 +1263,17 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		workspacePath = data.selectedThread?.thread.cwd ?? String(data.homePath);
 		draftingThread = !data.selectedThread;
 		bootErrorMessage = data.codexError ? String(data.codexError) : null;
+	});
+	// On mount, if the server returned empty threads (likely due to cold-start
+	// timeout), trigger a client-side fetch immediately instead of waiting for
+	// the SSE connection to be established.
+	let initialThreadsLoaded = false;
+	$effect(() => {
+		if (initialThreadsLoaded) return;
+		if (authenticated && threads.length === 0 && !bootErrorMessage && !selectedThread) {
+			initialThreadsLoaded = true;
+			void loadThreads();
+		}
 	});
 
 	let loadThreadsInFlight = false;
@@ -1629,7 +1627,8 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	function shouldPollEvents() {
 		if (forceEventPolling) return true;
 		if (typeof window === 'undefined') return false;
-		return true;
+		// Prefer SSE for real-time streaming; polling is a fallback only.
+		return false;
 	}
 
 	function abortableDelay(ms: number, signal: AbortSignal) {
@@ -1665,7 +1664,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			try {
 				const params = new URLSearchParams({
 					transport: 'poll',
-					wait: '5000'
+					wait: '1500'
 				});
 				if (lastEventId > 0) params.set('since', String(lastEventId));
 				const payload = await readJson<{ events: SequencedConsoleEvent[]; latestId: number }>(
@@ -1676,7 +1675,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 				lastEventId = Math.max(lastEventId, payload.latestId);
 				liveConnectionState = 'live';
 				if (payload.events.length === 0) {
-					await abortableDelay(1500, signal);
+					await abortableDelay(300, signal);
 				}
 			} catch {
 				if (signal.aborted) return;
@@ -1723,6 +1722,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			const startedAt = event.item.startedAt ?? current?.startedAt ?? null;
 			queueLiveEntryUpdate(event.item.id, event.threadId, {
 				...event.item,
+				streaming: false,
 				turnId: event.turnId,
 				startedAt,
 				completedAt,
