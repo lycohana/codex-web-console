@@ -45,6 +45,7 @@ export const load = async ({ locals, url }) => {
 	}
 
 	try {
+		codex.warmup();
 		const requestedThreadId = url.searchParams.get('thread')?.trim() || null;
 		let threads: Awaited<ReturnType<typeof codex.listThreads>> = [];
 		let selectedThread = null;

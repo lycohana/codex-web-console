@@ -1603,8 +1603,4 @@ class LocalCodexService {
 
 const codex = new LocalCodexService();
 
-// Preemptively warm the codex process at module load so the
-// first user-facing request doesn't pay the spawn + handshake cost.
-codex.warmup();
-
 export { codex };
