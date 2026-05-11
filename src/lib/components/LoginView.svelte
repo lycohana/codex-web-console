@@ -42,6 +42,7 @@
 				<input
 					name="token"
 					type="password"
+					aria-label="New access token"
 					autocomplete="off"
 					spellcheck="false"
 					placeholder="Enter a new access token"
@@ -63,6 +64,7 @@
 				<input
 					name="token"
 					type="password"
+					aria-label="Access token"
 					autocomplete="off"
 					spellcheck="false"
 					placeholder="Paste token"

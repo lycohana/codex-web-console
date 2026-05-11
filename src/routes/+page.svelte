@@ -96,6 +96,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let liveEntryFlushFrame: number | null = null;
 	let followLiveOutputFrame: number | null = null;
 	let mainScroller = $state<HTMLElement | null>(null);
+	let mobileComposerElement = $state<HTMLElement | null>(null);
 	let autoScrolledThreadId = $state<string | null>(null);
 	let activeTurnIndex = $state(0);
 	let turnNavigationLockUntil = $state(0);
@@ -124,6 +125,9 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let selectedModelId = $state('gpt-5.5');
 	let reasoningEffort = $state<ReasoningEffort>('high');
 	let serviceTier = $state<ServiceTier | null>(null);
+	const MAX_IMAGE_COUNT = 5;
+	const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+	const MAX_TOTAL_IMAGE_BYTES = 20 * 1024 * 1024;
 
 	const permissionOptions: Array<{
 		mode: PermissionMode;
@@ -1376,15 +1380,20 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		}
 	}
 
+	function hasComposerContent(prompt: string, images: string[]) {
+		return Boolean(prompt.trim() || images.length > 0);
+	}
+
 	async function createThread() {
-		if (!workspacePath.trim() || !newPrompt.trim()) { errorMessage = 'Workspace path and prompt are required.'; return; }
+		const cwd = (workspacePath || visibleWorkspacePath).trim();
+		if (!cwd || !hasComposerContent(newPrompt, pendingImages)) { errorMessage = 'Workspace path and prompt or image are required.'; return; }
 		submitting = true;
 		errorMessage = null;
 		const prompt = newPrompt.trim();
 		const images = [...pendingImages];
 		try {
 			followLiveOutput = true;
-			const payload = await readJson<{ thread: ThreadSummary }>(await fetch('/api/threads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cwd: workspacePath, prompt, permissionMode, modelSelection: modelSelectionPayload(), images: images.length > 0 ? images : undefined }) }));
+			const payload = await readJson<{ thread: ThreadSummary }>(await fetch('/api/threads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cwd, prompt, permissionMode, modelSelection: modelSelectionPayload(), images: images.length > 0 ? images : undefined }) }));
 			bootErrorMessage = null;
 			newPrompt = '';
 			pendingImages = [];
@@ -1413,7 +1422,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	}
 
 	async function sendReply() {
-		if (!selectedThread || !replyPrompt.trim()) return;
+		if (!selectedThread || !hasComposerContent(replyPrompt, replyImages)) return;
 		if (interruptableTurnId) { errorMessage = 'This turn is still running. Stop it before sending another reply.'; return; }
 		const thread = selectedThread;
 		const prompt = replyPrompt.trim();
@@ -1473,10 +1482,31 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		submit();
 	}
 
-	function addImages(files: FileList | File[], target: 'new' | 'reply') {
+	function dataUriBytes(dataUri: string) {
+		const base64 = dataUri.split(',', 2)[1] ?? '';
+		return Math.floor((base64.length * 3) / 4) - (base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0);
+	}
+
+	function currentImageBytes(target: 'new' | 'reply') {
 		const list = target === 'new' ? pendingImages : replyImages;
+		return list.reduce((sum, image) => sum + dataUriBytes(image), 0);
+	}
+
+	function addImages(files: FileList | File[], target: 'new' | 'reply') {
+		let currentCount = target === 'new' ? pendingImages.length : replyImages.length;
+		let totalBytes = currentImageBytes(target);
 		for (const file of files) {
 			if (!file.type.startsWith('image/')) continue;
+			if (currentCount >= MAX_IMAGE_COUNT) {
+				errorMessage = `最多只能添加 ${MAX_IMAGE_COUNT} 张图片。`;
+				break;
+			}
+			if (file.size > MAX_IMAGE_BYTES || totalBytes + file.size > MAX_TOTAL_IMAGE_BYTES) {
+				errorMessage = '图片过大：单张最多 10 MB，总计最多 20 MB。';
+				continue;
+			}
+			currentCount += 1;
+			totalBytes += file.size;
 			const reader = new FileReader();
 			reader.onload = () => {
 				const result = reader.result;
@@ -1488,6 +1518,20 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			reader.readAsDataURL(file);
 		}
 	}
+
+	$effect(() => {
+		if (typeof ResizeObserver === 'undefined' || !mobileComposerElement) return;
+
+		const updateComposerSpace = () => {
+			const height = Math.ceil(mobileComposerElement?.getBoundingClientRect().height ?? 148);
+			document.documentElement.style.setProperty('--mobile-composer-space', `${height}px`);
+		};
+
+		updateComposerSpace();
+		const observer = new ResizeObserver(updateComposerSpace);
+		observer.observe(mobileComposerElement);
+		return () => observer.disconnect();
+	});
 
 	function removeImage(index: number, target: 'new' | 'reply') {
 		if (target === 'new') pendingImages = pendingImages.filter((_, i) => i !== index);
@@ -1932,6 +1976,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			class:full={permissionMode === 'full'}
 			class="permission-trigger"
 			aria-haspopup="menu"
+			aria-controls="permission-menu"
 			aria-expanded={permissionMenuOpen}
 			onclick={(event) => { event.stopPropagation(); permissionMenuOpen = !permissionMenuOpen; modelMenuOpen = false; }}
 		>
@@ -1942,7 +1987,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			</svg>
 		</button>
 		{#if permissionMenuOpen}
-			<div class="permission-menu" role="menu" tabindex="-1">
+			<div class="permission-menu" id="permission-menu" role="menu" tabindex="-1">
 				{#each permissionOptions as option}
 					<button
 						type="button"
@@ -1982,6 +2027,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			type="button"
 			class="model-trigger"
 			aria-haspopup="menu"
+			aria-controls="model-menu"
 			aria-expanded={modelMenuOpen}
 			onclick={(event) => { event.stopPropagation(); modelMenuOpen = !modelMenuOpen; permissionMenuOpen = false; }}
 		>
@@ -1999,6 +2045,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		{#if modelMenuOpen}
 			<div
 				class="model-menu"
+				id="model-menu"
 				role="menu"
 				tabindex="-1"
 				onclick={(event) => event.stopPropagation()}
@@ -2331,6 +2378,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 											class="toolbar-btn"
 											onclick={() => newImageInput?.click()}
 											title="添加图片"
+											aria-label="添加图片"
 										>
 											{@render imageIcon()}
 										</button>
@@ -2347,7 +2395,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 										class="composer-send"
 										type="button"
 										onclick={() => void createThread()}
-										disabled={submitting || !workspacePath.trim() || (!newPrompt.trim() && pendingImages.length === 0)}
+										disabled={submitting || !(workspacePath || visibleWorkspacePath).trim() || !hasComposerContent(newPrompt, pendingImages)}
 										aria-label={submitting ? 'Starting thread' : 'Start thread'}
 										title={submitting ? 'Starting thread' : 'Start thread'}
 									>
@@ -2382,7 +2430,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 
 				<!-- Reply -->
 				{#if !showingDraftThread && visibleSelectedThread}
-					<div class="reply-box">
+					<div class="reply-box" bind:this={mobileComposerElement}>
 						{#if liveConnectionWarning}
 							<p class="warning live-warning">{liveConnectionWarning}</p>
 						{/if}
@@ -2420,6 +2468,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 										class="toolbar-btn"
 										onclick={() => replyImageInput?.click()}
 										title="添加图片"
+										aria-label="添加图片"
 										disabled={Boolean(interruptableTurnId) || interrupting}
 									>
 										{@render imageIcon()}
@@ -2450,7 +2499,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 											class="composer-send"
 											type="button"
 											onclick={() => void sendReply()}
-											disabled={submitting || interrupting || (!replyPrompt.trim() && replyImages.length === 0)}
+											disabled={submitting || interrupting || !hasComposerContent(replyPrompt, replyImages)}
 											aria-label={submitting ? 'Sending message' : 'Send message'}
 											title={submitting ? 'Sending message' : 'Send message'}
 										>

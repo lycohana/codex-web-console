@@ -382,23 +382,75 @@ button.danger:hover { background: #d63029; }
 	color: var(--ink);
 }
 
+.thread-item-row {
+	width: 100%;
+	border-radius: 6px;
+	background: transparent;
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) 28px;
+	align-items: center;
+	gap: 4px;
+	padding: 2px;
+}
+.thread-item-row:hover {
+	background: var(--line);
+}
+.thread-item-row.selected {
+	background: var(--line);
+}
+
 .thread-item {
+	min-width: 0;
 	width: 100%;
 	text-align: left;
-	padding: 10px 10px;
-	border-radius: 6px;
+	padding: 8px;
+	border-radius: 5px;
 	background: transparent;
 	color: var(--ink);
 	border: none;
+	box-shadow: none;
+	font-weight: 400;
+}
+
+.thread-item:hover {
+	background: transparent;
+	box-shadow: none;
+}
+
+.thread-copy {
+	min-width: 0;
 	display: flex;
 	flex-direction: column;
 	gap: 3px;
-	font-weight: 400;
 }
-.thread-item:hover {
-	background: var(--line);
+
+.thread-manage {
+	width: 28px;
+	height: 28px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 8px;
+	color: var(--ink-faint);
+	opacity: 0;
+	transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
 }
-.thread-item.selected {
+
+.thread-manage svg {
+	width: 16px;
+	height: 16px;
+	fill: currentColor;
+}
+
+.thread-item-row:hover .thread-manage,
+.thread-item-row:focus-within .thread-manage,
+.thread-manage:focus-visible {
+	opacity: 1;
+}
+
+.thread-manage:hover,
+.thread-manage:focus-visible {
+	color: var(--ink);
 	background: var(--line);
 }
 
@@ -2642,7 +2694,6 @@ button.browser-close {
 		height: 100vh;
 		height: 100dvh;
 		overflow: hidden;
-		--mobile-composer-space: calc(148px + env(safe-area-inset-bottom));
 	}
 
 	.app-shell.sidebar-collapsed {
