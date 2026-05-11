@@ -6,7 +6,11 @@ declare module 'bun:test' {
 			toBe(expected: unknown): void;
 			toBeNull(): void;
 			toMatchObject(expected: Record<string, unknown>): void;
+			toContain(expected: unknown): void;
 			toThrow(expected?: string | RegExp): void;
+			rejects: {
+				toMatchObject(expected: Record<string, unknown>): Promise<void>;
+			};
 		};
 	};
 }

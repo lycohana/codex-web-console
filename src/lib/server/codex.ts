@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
+import { WorkspaceAccessRegistry } from '$lib/server/file-access';
 import type {
 	ApprovalRequest,
 	ConsoleEvent,
@@ -903,6 +904,7 @@ class LocalCodexService {
 	private pendingApprovals = new Map<string, PendingApproval>();
 	private listThreadsInFlight: Promise<ThreadSummary[]> | null = null;
 	private readThreadInFlight = new Map<string, Promise<ThreadDetail>>();
+	private workspaceAccess = new WorkspaceAccessRegistry();
 
 	subscribe(listener: (event: ConsoleEvent, id: number) => void): () => void {
 		this.listeners.add(listener);
@@ -953,6 +955,10 @@ class LocalCodexService {
 			.map(({ rpcId: _rpcId, params: _params, ...approval }) => approval);
 	}
 
+	getFileAccessRegistry(): WorkspaceAccessRegistry {
+		return this.workspaceAccess;
+	}
+
 	async listThreads(): Promise<ThreadSummary[]> {
 		if (this.listThreadsInFlight) {
 			return this.listThreadsInFlight;
@@ -967,7 +973,11 @@ class LocalCodexService {
 				sortKey: 'updated_at',
 				sortDirection: 'desc'
 			})) as { data: ThreadRecord[] };
-			return response.data.map(normalizeThreadSummary);
+			const threads = response.data.map(normalizeThreadSummary);
+			for (const thread of threads) {
+				this.workspaceAccess.allowRoot(thread.cwd);
+			}
+			return threads;
 		})();
 
 		this.listThreadsInFlight = promise;
@@ -1026,7 +1036,9 @@ class LocalCodexService {
 			throw lastError instanceof Error ? lastError : new Error(String(lastError));
 		}
 
-		return normalizeThreadDetail(response.thread, this.getPendingApprovals(threadId), options);
+		const detail = normalizeThreadDetail(response.thread, this.getPendingApprovals(threadId), options);
+		this.workspaceAccess.allowRoot(detail.thread.cwd);
+		return detail;
 	}
 
 	async renameThread(threadId: string, name: string): Promise<ThreadSummary> {
@@ -1088,7 +1100,9 @@ class LocalCodexService {
 			...model
 		}, 'Failed to start turn');
 
-		return normalizeThreadSummary(response.thread);
+		const thread = normalizeThreadSummary(response.thread);
+		this.workspaceAccess.allowRoot(thread.cwd);
+		return thread;
 	}
 
 	async sendMessage(
@@ -1100,6 +1114,7 @@ class LocalCodexService {
 		images?: string[]
 	): Promise<void> {
 		await this.ensureStarted();
+		this.workspaceAccess.allowRoot(cwd);
 
 		const permissions = permissionRuntime(cwd, permissionMode);
 		const model = modelRuntime(modelSelection);
