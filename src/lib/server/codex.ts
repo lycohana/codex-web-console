@@ -1091,14 +1091,14 @@ class LocalCodexService {
 			}
 		];
 
-		this.enqueueRequest('turn/start', {
+		await this.request('turn/start', {
 			threadId: response.thread.id,
 			input,
 			approvalPolicy: permissions.approvalPolicy,
 			approvalsReviewer: permissions.approvalsReviewer,
 			sandboxPolicy: permissions.sandboxPolicy,
 			...model
-		}, 'Failed to start turn');
+		});
 
 		const thread = normalizeThreadSummary(response.thread);
 		this.workspaceAccess.allowRoot(thread.cwd);
@@ -1138,7 +1138,7 @@ class LocalCodexService {
 			...model
 		};
 
-		void this.request('thread/resume', {
+		await this.request('thread/resume', {
 			threadId,
 			cwd,
 			...(model.model ? { model: model.model } : {}),
@@ -1148,12 +1148,8 @@ class LocalCodexService {
 			approvalsReviewer: permissions.approvalsReviewer,
 			sandbox: permissions.sandbox,
 			persistExtendedHistory: true
-		})
-			.then(() => this.request('turn/start', turnStartParams))
-			.catch((error) => {
-				const message = error instanceof Error ? error.message : String(error);
-				this.emit({ type: 'error', message: `Failed to send message: ${message}` });
-			});
+		});
+		await this.request('turn/start', turnStartParams);
 	}
 
 	async interruptTurn(threadId: string, turnId: string): Promise<void> {
