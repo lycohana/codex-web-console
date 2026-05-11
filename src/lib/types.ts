@@ -131,6 +131,8 @@ export type ConsoleEvent =
 			threadId: string;
 			turnId: string;
 			item: TimelineEntry;
+			items?: TimelineEntry[];
+			sourceItemId?: string;
 	  }
 	| {
 			type: 'message.delta' | 'reasoning.delta' | 'command.delta' | 'file_change.delta';

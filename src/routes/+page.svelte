@@ -903,6 +903,19 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		}
 	}
 
+	function removeLiveEntry(threadId: string, itemId: string) {
+		queuedLiveEntryUpdates.delete(liveEntryQueueKey(threadId, itemId));
+		const selected = threadId === selectedThreadId;
+		const entries = selected ? liveEntries : (liveEntryBuffers[threadId] ?? {});
+		if (!(itemId in entries)) return;
+		const { [itemId]: _removed, ...next } = entries;
+		if (selected) {
+			liveEntries = next;
+		} else {
+			liveEntryBuffers = { ...liveEntryBuffers, [threadId]: next };
+		}
+	}
+
 	function getLiveEntry(threadId: string, itemId: string) {
 		const queued = queuedLiveEntryUpdates.get(liveEntryQueueKey(threadId, itemId));
 		if (queued) {
@@ -1720,16 +1733,20 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			return;
 		}
 		if (event.type === 'item.completed') {
-			const current = getLiveEntry(event.threadId, event.item.id);
-			const completedAt = event.item.completedAt ?? Date.now();
-			const startedAt = event.item.startedAt ?? current?.startedAt ?? null;
-			queueLiveEntryUpdate(event.item.id, event.threadId, {
-				...event.item,
-				turnId: event.turnId,
-				startedAt,
-				completedAt,
-				durationMs: event.item.durationMs ?? (startedAt ? completedAt - startedAt : null)
-			});
+			const items = event.items && event.items.length > 0 ? event.items : [event.item];
+			if (event.sourceItemId) removeLiveEntry(event.threadId, event.sourceItemId);
+			for (const item of items) {
+				const current = getLiveEntry(event.threadId, item.id);
+				const completedAt = item.completedAt ?? Date.now();
+				const startedAt = item.startedAt ?? current?.startedAt ?? null;
+				queueLiveEntryUpdate(item.id, event.threadId, {
+					...item,
+					turnId: event.turnId,
+					startedAt,
+					completedAt,
+					durationMs: item.durationMs ?? (startedAt ? completedAt - startedAt : null)
+				});
+			}
 			maybeFollowLiveOutput(event.threadId);
 			return;
 		}

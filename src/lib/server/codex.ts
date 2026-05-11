@@ -205,6 +205,92 @@ function prettifyItemType(type: string): string {
 		.replace(/^\w/, (char) => char.toUpperCase());
 }
 
+type GitDirective = {
+	name: 'git-stage' | 'git-commit' | 'git-push';
+	attrs: Record<string, string>;
+	raw: string;
+};
+
+const GIT_DIRECTIVE_PATTERN = /:{1,2}(git-(?:stage|commit|push))\{([^{}]*)\}/g;
+const DIRECTIVE_ATTRIBUTE_PATTERN =
+	/([A-Za-z_][\w-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s}]+))/g;
+
+function parseDirectiveAttributes(input: string): Record<string, string> {
+	const attrs: Record<string, string> = {};
+	DIRECTIVE_ATTRIBUTE_PATTERN.lastIndex = 0;
+
+	for (const match of input.matchAll(DIRECTIVE_ATTRIBUTE_PATTERN)) {
+		const key = match[1];
+		const value = match[2] ?? match[3] ?? match[4] ?? '';
+		attrs[key] = value.replace(/\\"/g, '"').replace(/\\'/g, "'");
+	}
+
+	return attrs;
+}
+
+function parseGitDirective(name: string, attrs: string, raw: string): GitDirective | null {
+	if (name !== 'git-stage' && name !== 'git-commit' && name !== 'git-push') return null;
+	return {
+		name,
+		attrs: parseDirectiveAttributes(attrs),
+		raw
+	};
+}
+
+function gitDirectiveCommand(directive: GitDirective): string {
+	if (directive.name === 'git-stage') return 'git add .';
+	if (directive.name === 'git-commit') return 'git commit';
+
+	const branch = readString(directive.attrs.branch);
+	return branch ? `git push origin ${branch}` : 'git push';
+}
+
+function expandGitDirectives(entry: TimelineEntry): TimelineEntry[] {
+	if (entry.kind !== 'assistant' || !entry.text) return [entry];
+
+	GIT_DIRECTIVE_PATTERN.lastIndex = 0;
+	const pieces: TimelineEntry[] = [];
+	let cursor = 0;
+	let textIndex = 0;
+	let directiveIndex = 0;
+
+	function pushText(text: string): void {
+		const trimmed = text.trim();
+		if (!trimmed) return;
+		pieces.push({
+			...entry,
+			id: textIndex === 0 ? entry.id : `${entry.id}:text-${textIndex}`,
+			text: trimmed
+		});
+		textIndex += 1;
+	}
+
+	for (const match of entry.text.matchAll(GIT_DIRECTIVE_PATTERN)) {
+		pushText(entry.text.slice(cursor, match.index));
+		cursor = (match.index ?? 0) + match[0].length;
+
+		const directive = parseGitDirective(match[1], match[2], match[0]);
+		if (!directive) continue;
+
+		pieces.push({
+			id: `${entry.id}:git-${directiveIndex}`,
+			kind: 'command',
+			label: 'Git',
+			command: gitDirectiveCommand(directive),
+			cwd: readString(directive.attrs.cwd) ?? '',
+			output: directive.raw,
+			status: entry.status ?? 'completed',
+			startedAt: entry.startedAt,
+			completedAt: entry.completedAt,
+			durationMs: entry.durationMs
+		});
+		directiveIndex += 1;
+	}
+
+	pushText(entry.text.slice(cursor));
+	return pieces.length > 0 ? pieces : [entry];
+}
+
 function normalizeToolCall(item: ThreadItem): TimelineEntry {
 	const tool = asRecord(item.tool);
 	const server = asRecord(item.server);
@@ -628,6 +714,10 @@ function normalizeTimelineEntry(item: ThreadItem): TimelineEntry {
 	}
 }
 
+function normalizeTimelineEntries(item: ThreadItem): TimelineEntry[] {
+	return expandGitDirectives(normalizeTimelineEntry(item));
+}
+
 function normalizeThreadDetail(
 	thread: ThreadRecord,
 	approvals: ApprovalRequest[],
@@ -652,7 +742,7 @@ function normalizeThreadDetail(
 		startedAt: turn.startedAt,
 		completedAt: turn.completedAt,
 		durationMs: turn.durationMs,
-		entries: turn.items.map(normalizeTimelineEntry)
+		entries: turn.items.flatMap(normalizeTimelineEntries)
 	}));
 
 	return {
@@ -1404,16 +1494,22 @@ class LocalCodexService {
 			const item = asRecord(safeParams.item) as ThreadItem | null;
 
 			if (threadId && turnId && item) {
-				const normalized = normalizeTimelineEntry(item);
-				if (method === 'item/completed' && (normalized.kind === 'command' || normalized.kind === 'tool_call')) {
-					normalized.status ??= 'completed';
-					normalized.completedAt ??= Date.now();
+				const normalizedItems = normalizeTimelineEntries(item);
+				if (method === 'item/completed') {
+					for (const normalized of normalizedItems) {
+						if (normalized.kind === 'command' || normalized.kind === 'tool_call') {
+							normalized.status ??= 'completed';
+							normalized.completedAt ??= Date.now();
+						}
+					}
 				}
 				this.emit({
 					type: method === 'item/started' ? 'item.started' : 'item.completed',
 					threadId,
 					turnId,
-					item: normalized
+					item: normalizedItems[0] ?? normalizeTimelineEntry(item),
+					...(normalizedItems.length > 1 ? { items: normalizedItems } : {}),
+					...(normalizedItems.some((normalized) => normalized.id !== item.id) ? { sourceItemId: item.id } : {})
 				});
 			}
 			return;
