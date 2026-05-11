@@ -1,0 +1,12 @@
+declare module 'bun:test' {
+	export function describe(name: string, fn: () => void): void;
+	export function test(name: string, fn: () => void | Promise<void>): void;
+	export const expect: {
+		(actual: unknown): {
+			toBe(expected: unknown): void;
+			toBeNull(): void;
+			toMatchObject(expected: Record<string, unknown>): void;
+			toThrow(expected?: string | RegExp): void;
+		};
+	};
+}
