@@ -228,6 +228,12 @@ function parseDirectiveAttributes(input: string): Record<string, string> {
 	return attrs;
 }
 
+function isInsideMarkdownFence(text: string, index: number): boolean {
+	const before = text.slice(0, index);
+	const fenceMatches = before.match(/(^|\n)```/g);
+	return Boolean(fenceMatches && fenceMatches.length % 2 === 1);
+}
+
 function parseGitDirective(name: string, attrs: string, raw: string): GitDirective | null {
 	if (name !== 'git-stage' && name !== 'git-commit' && name !== 'git-push') return null;
 	return {
@@ -266,6 +272,8 @@ function expandGitDirectives(entry: TimelineEntry): TimelineEntry[] {
 	}
 
 	for (const match of entry.text.matchAll(GIT_DIRECTIVE_PATTERN)) {
+		if (isInsideMarkdownFence(entry.text, match.index ?? 0)) continue;
+
 		pushText(entry.text.slice(cursor, match.index));
 		cursor = (match.index ?? 0) + match[0].length;
 
@@ -289,6 +297,30 @@ function expandGitDirectives(entry: TimelineEntry): TimelineEntry[] {
 
 	pushText(entry.text.slice(cursor));
 	return pieces.length > 0 ? pieces : [entry];
+}
+
+function readContentText(value: unknown): string {
+	if (typeof value === 'string') return value;
+	if (!Array.isArray(value)) return '';
+
+	return value
+		.map((part) => {
+			if (typeof part === 'string') return part;
+
+			const entry = asRecord(part);
+			if (!entry) return '';
+
+			const direct =
+				readString(entry.text) ??
+				readString(entry.content) ??
+				readString(entry.value);
+			if (direct !== null) return direct;
+
+			const nested = readContentText(entry.content);
+			return nested;
+		})
+		.filter((part) => part.length > 0)
+		.join('\n');
 }
 
 function normalizeToolCall(item: ThreadItem): TimelineEntry {
@@ -565,13 +597,7 @@ function normalizeTimelineEntry(item: ThreadItem): TimelineEntry {
 				id: item.id,
 				kind: 'user',
 				label: 'You',
-				text: contentParts
-					.map((part) => {
-						const entry = asRecord(part);
-						return entry && entry.type === 'text' && typeof entry.text === 'string' ? entry.text : '';
-					})
-					.filter((value): value is string => Boolean(value))
-					.join('\n'),
+				text: readContentText(contentParts),
 				...(images.length > 0 ? { images } : {})
 			};
 		}
@@ -581,7 +607,7 @@ function normalizeTimelineEntry(item: ThreadItem): TimelineEntry {
 				id: item.id,
 				kind: 'assistant',
 				label: item.phase === 'commentary' ? 'Assistant commentary' : 'Assistant',
-				text: readString(item.text) ?? '',
+				text: readString(item.text) ?? readContentText(item.content),
 				phase: item.phase === 'commentary' || item.phase === 'final_answer' ? item.phase : null,
 				...(assistantImages.length > 0 ? { images: assistantImages } : {})
 			};
