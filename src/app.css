@@ -1099,7 +1099,12 @@ body { font-weight: 425; }
 /* ?? Markdown ?? */
 
 /* Spacing reset */
-.markdown { min-width: 0; line-height: 1.65; }
+.markdown {
+	min-width: 0;
+	max-width: 100%;
+	line-height: 1.65;
+	overflow-wrap: anywhere;
+}
 .markdown > * + * { margin-top: 0.8rem; }
 .markdown *:first-child { margin-top: 0; }
 .markdown *:last-child { margin-bottom: 0; }
@@ -1138,11 +1143,15 @@ body { font-weight: 425; }
 	padding: 0.12rem 0.4rem;
 	border-radius: 4px;
 	font-weight: 475;
+	overflow-wrap: anywhere;
+	word-break: break-word;
 }
 
 /* Code blocks */
 .markdown pre {
 	margin: 0.8rem 0;
+	min-width: 0;
+	max-width: 100%;
 	padding: 14px 16px;
 	border-radius: 8px;
 	background: var(--surface);
@@ -1150,12 +1159,18 @@ body { font-weight: 425; }
 	overflow-x: auto;
 	font-size: 0.9em;
 	line-height: 1.5;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	word-break: break-word;
 }
 .markdown pre code {
 	padding: 0;
 	background: transparent;
 	font-size: inherit;
 	font-weight: inherit;
+	white-space: inherit;
+	overflow-wrap: inherit;
+	word-break: inherit;
 }
 
 /* Images */
