@@ -33,6 +33,13 @@ export interface ModelSelection {
 	provider?: string | null;
 }
 
+export interface ContextUsage {
+	usedTokens: number | null;
+	totalTokens: number | null;
+	percentage: number | null;
+	source?: string | null;
+}
+
 export interface ThreadSummary {
 	id: string;
 	title: string;
@@ -103,6 +110,7 @@ export interface ThreadDetail {
 	turns: TimelineTurn[];
 	approvals: ApprovalRequest[];
 	omittedTurnCount?: number;
+	contextUsage?: ContextUsage | null;
 }
 
 export interface DirectoryListing {
@@ -125,6 +133,12 @@ export type ConsoleEvent =
 			type: 'turn.started' | 'turn.completed';
 			threadId: string;
 			turnId: string;
+			contextUsage?: ContextUsage | null;
+	  }
+	| {
+			type: 'context.updated';
+			threadId: string;
+			contextUsage: ContextUsage;
 	  }
 	| {
 			type: 'item.started' | 'item.completed';

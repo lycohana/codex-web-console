@@ -10,6 +10,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	import WorkspaceBrowser from '$lib/components/WorkspaceBrowser.svelte';
 	import type {
 		ApprovalRequest,
+		ContextUsage,
 		ConsoleEvent,
 		DirectoryListing,
 		ModelOption,
@@ -107,8 +108,10 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let permissionMode = $state<PermissionMode>('default');
 	let permissionMenuOpen = $state(false);
 	let modelMenuOpen = $state(false);
+	let contextMenuOpen = $state(false);
 	let modelListOpen = $state(false);
 	let speedListOpen = $state(false);
+	let liveContextUsage = $state<Record<string, ContextUsage>>({});
 	let threadManagerDialog = $state<{
 		mode: 'menu' | 'rename' | 'delete';
 		thread: ThreadSummary;
@@ -268,6 +271,11 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		if (data.selectedThread?.thread.id === visibleSelectedThreadId) return data.selectedThread;
 		return null;
 	});
+	const currentContextUsage = $derived.by(() => {
+		const threadId = visibleSelectedThreadId;
+		if (threadId && liveContextUsage[threadId]) return liveContextUsage[threadId];
+		return visibleSelectedThread?.contextUsage ?? null;
+	});
 	const visibleWorkspacePath = $derived(
 		workspacePath || data.selectedThread?.thread.cwd || String(data.homePath)
 	);
@@ -357,6 +365,11 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		if (liveConnectionState === 'reconnecting') return 'Disconnected. Reconnecting…';
 		return null;
 	});
+	const contextFillWidth = $derived(
+		currentContextUsage?.percentage === null || currentContextUsage?.percentage === undefined
+			? 0
+			: Math.min(100, Math.max(0, currentContextUsage.percentage))
+	);
 	const LAST_THREAD_STORAGE_KEY = 'lastThreadId';
 
 	const enhanceRedirect: SubmitFunction = () => {
@@ -479,6 +492,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	function selectPermissionMode(mode: PermissionMode) {
 		permissionMode = mode;
 		permissionMenuOpen = false;
+		contextMenuOpen = false;
 		if (typeof localStorage !== 'undefined') {
 			localStorage.setItem('permissionMode', mode);
 		}
@@ -537,17 +551,20 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			serviceTier = null;
 		}
 		modelListOpen = false;
+		contextMenuOpen = false;
 		persistModelSelection();
 	}
 
 	function selectReasoningEffort(effort: ReasoningEffort) {
 		reasoningEffort = effort;
+		contextMenuOpen = false;
 		persistModelSelection();
 	}
 
 	function selectServiceTier(tier: ServiceTier | null) {
 		serviceTier = tier;
 		speedListOpen = false;
+		contextMenuOpen = false;
 		persistModelSelection();
 	}
 
@@ -584,6 +601,37 @@ import type { SubmitFunction } from '@sveltejs/kit';
 
 	function modelShortName(model: ModelOption): string {
 		return model.displayName.replace(/^GPT-/i, '').replace(/^gpt-/i, '').replace(/-Codex/i, '');
+	}
+
+	function formatTokenCount(value: number | null | undefined): string {
+		if (value === null || value === undefined) return '未知';
+		const abs = Math.abs(value);
+		if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(value % 1_000_000 === 0 ? 0 : 1)}M`;
+		if (abs >= 1_000) return `${Math.round(value / 1_000)}k`;
+		return new Intl.NumberFormat('zh-CN').format(value);
+	}
+
+	function contextUsagePercent(usage: ContextUsage | null): string {
+		if (usage?.percentage === null || usage?.percentage === undefined) return '--';
+		return `${Math.round(usage.percentage)}%`;
+	}
+
+	function contextUsageSummary(usage: ContextUsage | null): string {
+		if (!usage) return '暂无上下文用量';
+		if (usage.usedTokens !== null && usage.totalTokens !== null) {
+			return `已用 ${formatTokenCount(usage.usedTokens)} 标记，共 ${formatTokenCount(usage.totalTokens)}`;
+		}
+		if (usage.usedTokens !== null) return `已用 ${formatTokenCount(usage.usedTokens)} 标记`;
+		if (usage.totalTokens !== null) return `窗口 ${formatTokenCount(usage.totalTokens)} 标记，已用未知`;
+		return '暂无上下文用量';
+	}
+
+	function rememberContextUsage(threadId: string, usage: ContextUsage | null | undefined) {
+		if (!usage) return;
+		liveContextUsage = { ...liveContextUsage, [threadId]: usage };
+		if (selectedThread?.thread.id === threadId) {
+			selectedThread = { ...selectedThread, contextUsage: usage };
+		}
 	}
 
 	function isMobileViewport() {
@@ -1747,12 +1795,17 @@ import type { SubmitFunction } from '@sveltejs/kit';
 
 	function handleEvent(event: ConsoleEvent) {
 		if (event.type === 'thread.started') { void loadThreads(); return; }
+		if (event.type === 'context.updated') {
+			rememberContextUsage(event.threadId, event.contextUsage);
+			return;
+		}
 		if (event.type === 'approval.requested') {
 			if (event.threadId === selectedThreadId) approvals = [...approvals.filter(a => a.requestId !== event.approval.requestId), event.approval];
 			return;
 		}
 		if (event.type === 'approval.resolved') { approvals = approvals.filter(a => a.requestId !== event.requestId); return; }
 		if (event.type === 'turn.completed') {
+			rememberContextUsage(event.threadId, event.contextUsage);
 			void loadThreads();
 			completeLiveEntriesForTurn(event.threadId, event.turnId);
 			if (runningTurnId === event.turnId) runningTurnId = null;
@@ -1760,6 +1813,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			return;
 		}
 		if (event.type === 'turn.started') {
+			rememberContextUsage(event.threadId, event.contextUsage);
 			if (event.threadId === selectedThreadId) {
 				replaceOptimisticTurnId(event.turnId);
 				runningTurnId = event.turnId;
@@ -1978,7 +2032,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			aria-haspopup="menu"
 			aria-controls="permission-menu"
 			aria-expanded={permissionMenuOpen}
-			onclick={(event) => { event.stopPropagation(); permissionMenuOpen = !permissionMenuOpen; modelMenuOpen = false; }}
+			onclick={(event) => { event.stopPropagation(); permissionMenuOpen = !permissionMenuOpen; modelMenuOpen = false; contextMenuOpen = false; }}
 		>
 			<span class="permission-trigger-icon">{@render permissionIcon(selectedPermission.mode)}</span>
 			<span>{selectedPermission.label}</span>
@@ -2021,6 +2075,46 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	</svg>
 {/snippet}
 
+{#snippet contextIcon()}
+	<svg viewBox="0 0 20 20" aria-hidden="true" fill="none">
+		<path d="M4.5 5.5h11M4.5 10h11M4.5 14.5h6.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+	</svg>
+{/snippet}
+
+{#snippet contextMeter()}
+	<div
+		class="context-meter"
+		class:open={contextMenuOpen}
+	>
+		<button
+			type="button"
+			class="context-trigger"
+			aria-haspopup="dialog"
+			aria-expanded={contextMenuOpen}
+			aria-label="背景信息窗口"
+			title="背景信息窗口"
+			onclick={(event) => { event.stopPropagation(); contextMenuOpen = !contextMenuOpen; modelMenuOpen = false; permissionMenuOpen = false; }}
+		>
+			<span class="context-trigger-icon">{@render contextIcon()}</span>
+			<span class="context-trigger-copy">
+				<span>{contextUsagePercent(currentContextUsage)}</span>
+			</span>
+		</button>
+		{#if contextMenuOpen}
+			<div class="context-popover" role="dialog" tabindex="-1" aria-label="背景信息窗口">
+				<div class="context-popover-header">
+					<span>背景信息窗口</span>
+					<strong>{contextUsagePercent(currentContextUsage)}</strong>
+				</div>
+				<div class="context-progress" aria-hidden="true">
+					<span style={`width: ${contextFillWidth}%`}></span>
+				</div>
+				<p>{contextUsageSummary(currentContextUsage)}</p>
+			</div>
+		{/if}
+	</div>
+{/snippet}
+
 {#snippet modelPicker()}
 	<div class="model-picker" class:open={modelMenuOpen}>
 		<button
@@ -2029,7 +2123,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			aria-haspopup="menu"
 			aria-controls="model-menu"
 			aria-expanded={modelMenuOpen}
-			onclick={(event) => { event.stopPropagation(); modelMenuOpen = !modelMenuOpen; permissionMenuOpen = false; }}
+			onclick={(event) => { event.stopPropagation(); modelMenuOpen = !modelMenuOpen; permissionMenuOpen = false; contextMenuOpen = false; }}
 		>
 			{#if serviceTier === 'fast'}
 				<span class="model-trigger-icon">{@render speedIcon()}</span>
@@ -2192,11 +2286,12 @@ import type { SubmitFunction } from '@sveltejs/kit';
 </svelte:head>
 
 <svelte:window
-	onclick={() => { permissionMenuOpen = false; modelMenuOpen = false; modelListOpen = false; speedListOpen = false; }}
+	onclick={() => { permissionMenuOpen = false; modelMenuOpen = false; contextMenuOpen = false; modelListOpen = false; speedListOpen = false; }}
 	onkeydown={(event) => {
 		if (event.key === 'Escape') {
 			permissionMenuOpen = false;
 			modelMenuOpen = false;
+			contextMenuOpen = false;
 			modelListOpen = false;
 			speedListOpen = false;
 			closeThreadManagerDialog();
@@ -2370,8 +2465,9 @@ import type { SubmitFunction } from '@sveltejs/kit';
 									ondragover={(e) => { e.preventDefault(); }}
 								></textarea>
 								<div class="prompt-toolbar">
-									<div class="prompt-toolbar-left" class:menu-open={modelMenuOpen || permissionMenuOpen}>
+									<div class="prompt-toolbar-left" class:menu-open={modelMenuOpen || permissionMenuOpen || contextMenuOpen}>
 										{@render modelPicker()}
+										{@render contextMeter()}
 										{@render permissionPicker()}
 										<button
 											type="button"
@@ -2460,8 +2556,9 @@ import type { SubmitFunction } from '@sveltejs/kit';
 								ondragover={(e) => { e.preventDefault(); }}
 							></textarea>
 							<div class="prompt-toolbar">
-								<div class="prompt-toolbar-left" class:menu-open={modelMenuOpen || permissionMenuOpen}>
+								<div class="prompt-toolbar-left" class:menu-open={modelMenuOpen || permissionMenuOpen || contextMenuOpen}>
 									{@render modelPicker()}
+									{@render contextMeter()}
 									{@render permissionPicker()}
 									<button
 										type="button"

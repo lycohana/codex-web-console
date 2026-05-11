@@ -1,10 +1,13 @@
+import { createReadStream } from 'node:fs';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { homedir } from 'node:os';
+import { createInterface } from 'node:readline';
 import path from 'node:path';
 
 import { WorkspaceAccessRegistry } from '$lib/server/file-access';
 import type {
 	ApprovalRequest,
+	ContextUsage,
 	ConsoleEvent,
 	DirectoryListing,
 	ModelOption,
@@ -49,6 +52,7 @@ type ThreadRecord = {
 	cwd: string;
 	updatedAt: number;
 	modelProvider?: string | null;
+	path?: string | null;
 	status: ThreadStatus;
 	turns: Array<{
 		id: string;
@@ -64,7 +68,7 @@ type ThreadRecord = {
 		durationMs: number | null;
 		items: ThreadItem[];
 	}>;
-};
+} & Record<string, unknown>;
 
 type PendingApproval = ApprovalRequest & {
 	rpcId: number;
@@ -159,6 +163,17 @@ function readErrorText(value: unknown): string | null {
 
 function readNumber(value: unknown): number | null {
 	return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function readPositiveInteger(value: unknown): number | null {
+	const numeric =
+		typeof value === 'number'
+			? value
+			: typeof value === 'string' && value.trim() && /^-?\d+(?:\.\d+)?$/.test(value.trim())
+				? Number(value)
+				: null;
+	if (numeric === null || !Number.isFinite(numeric) || numeric < 0) return null;
+	return Math.round(numeric);
 }
 
 function readStringArray(value: unknown): string[] {
@@ -436,6 +451,124 @@ function normalizeThreadSummary(thread: ThreadRecord): ThreadSummary {
 		status: normalizeThreadStatus(thread.status),
 		provider: readString(thread.modelProvider)
 	};
+}
+
+function firstNumber(record: Record<string, unknown> | null | undefined, keys: string[]): number | null {
+	if (!record) return null;
+	for (const key of keys) {
+		const value = readPositiveInteger(record[key]);
+		if (value !== null) return value;
+	}
+	return null;
+}
+
+const USED_TOKEN_KEYS = [
+	'usedTokens',
+	'used_tokens',
+	'totalTokens',
+	'total_tokens',
+	'inputTokens',
+	'input_tokens',
+	'tokensUsed',
+	'tokens_used',
+	'promptTokens',
+	'prompt_tokens',
+	'contextTokens',
+	'context_tokens'
+];
+
+const WINDOW_TOKEN_KEYS = [
+	'contextWindow',
+	'context_window',
+	'modelContextWindow',
+	'model_context_window',
+	'windowTokens',
+	'window_tokens',
+	'maxContextTokens',
+	'max_context_tokens',
+	'maxTokens',
+	'max_tokens',
+	'limit',
+	'tokenLimit',
+	'token_limit'
+];
+
+const USAGE_OBJECT_KEYS = [
+	'payload',
+	'info',
+	'lastTokenUsage',
+	'last_token_usage',
+	'contextUsage',
+	'context_usage',
+	'context',
+	'usage',
+	'tokenUsage',
+	'token_usage',
+	'tokens'
+];
+
+export function normalizeContextUsage(value: unknown): ContextUsage | null {
+	const seen = new Set<unknown>();
+	const candidates: Array<Record<string, unknown>> = [];
+
+	function visit(candidate: unknown): void {
+		const record = asRecord(candidate);
+		if (!record || seen.has(record)) return;
+		seen.add(record);
+		candidates.push(record);
+
+		for (const key of USAGE_OBJECT_KEYS) {
+			visit(record[key]);
+		}
+	}
+
+	visit(value);
+
+	let usedTokens: number | null = null;
+	let totalTokens: number | null = null;
+	for (const record of candidates) {
+		usedTokens ??= firstNumber(record, USED_TOKEN_KEYS);
+		totalTokens ??= firstNumber(record, WINDOW_TOKEN_KEYS);
+	}
+
+	if (usedTokens === null && totalTokens === null) return null;
+
+	const percentage =
+		usedTokens !== null && totalTokens !== null && totalTokens > 0
+			? Math.min(100, Math.max(0, (usedTokens / totalTokens) * 100))
+			: null;
+
+	return {
+		usedTokens,
+		totalTokens,
+		percentage,
+		source: candidates[0] === value ? 'thread' : 'nested'
+	};
+}
+
+export async function readContextUsageFromRollout(rolloutPath: string | null | undefined): Promise<ContextUsage | null> {
+	if (!rolloutPath) return null;
+	let latest: ContextUsage | null = null;
+
+	try {
+		const lines = createInterface({
+			input: createReadStream(rolloutPath, { encoding: 'utf-8' }),
+			crlfDelay: Infinity
+		});
+
+		for await (const line of lines) {
+			if (!line.includes('"token_count"') && !line.includes('"task_started"')) continue;
+			const record = asRecord(JSON.parse(line));
+			const payload = asRecord(record?.payload);
+			if (!payload) continue;
+			const usage = normalizeContextUsage(payload);
+			if (usage) latest = usage;
+		}
+	} catch {
+		return null;
+	}
+
+	return latest;
 }
 
 function normalizeReasoningEffort(value: unknown): ReasoningEffort | null {
@@ -745,11 +878,11 @@ function normalizeTimelineEntries(item: ThreadItem): TimelineEntry[] {
 	return expandGitDirectives(normalizeTimelineEntry(item));
 }
 
-function normalizeThreadDetail(
+async function normalizeThreadDetail(
 	thread: ThreadRecord,
 	approvals: ApprovalRequest[],
 	options: ReadThreadOptions = {}
-): ThreadDetail {
+): Promise<ThreadDetail> {
 	const tailTurns =
 		typeof options.tailTurns === 'number' && Number.isFinite(options.tailTurns) && options.tailTurns > 0
 			? Math.floor(options.tailTurns)
@@ -776,7 +909,8 @@ function normalizeThreadDetail(
 		thread: normalizeThreadSummary(thread),
 		turns,
 		approvals,
-		omittedTurnCount
+		omittedTurnCount,
+		contextUsage: normalizeContextUsage(thread) ?? (await readContextUsageFromRollout(readString(thread.path)))
 	};
 }
 
@@ -904,6 +1038,8 @@ class LocalCodexService {
 	private pendingApprovals = new Map<string, PendingApproval>();
 	private listThreadsInFlight: Promise<ThreadSummary[]> | null = null;
 	private readThreadInFlight = new Map<string, Promise<ThreadDetail>>();
+	private turnThreads = new Map<string, string>();
+	private latestActiveThreadId: string | null = null;
 	private workspaceAccess = new WorkspaceAccessRegistry();
 
 	subscribe(listener: (event: ConsoleEvent, id: number) => void): () => void {
@@ -1036,7 +1172,7 @@ class LocalCodexService {
 			throw lastError instanceof Error ? lastError : new Error(String(lastError));
 		}
 
-		const detail = normalizeThreadDetail(response.thread, this.getPendingApprovals(threadId), options);
+		const detail = await normalizeThreadDetail(response.thread, this.getPendingApprovals(threadId), options);
 		this.workspaceAccess.allowRoot(detail.thread.cwd);
 		return detail;
 	}
@@ -1078,7 +1214,7 @@ class LocalCodexService {
 			approvalPolicy: permissions.approvalPolicy,
 			approvalsReviewer: permissions.approvalsReviewer,
 			sandbox: permissions.sandbox,
-			experimentalRawEvents: false,
+			experimentalRawEvents: true,
 			persistExtendedHistory: true
 		})) as { thread: ThreadRecord };
 
@@ -1091,6 +1227,7 @@ class LocalCodexService {
 			}
 		];
 
+		this.latestActiveThreadId = response.thread.id;
 		await this.request('turn/start', {
 			threadId: response.thread.id,
 			input,
@@ -1147,8 +1284,10 @@ class LocalCodexService {
 			approvalPolicy: permissions.approvalPolicy,
 			approvalsReviewer: permissions.approvalsReviewer,
 			sandbox: permissions.sandbox,
+			experimentalRawEvents: true,
 			persistExtendedHistory: true
 		});
+		this.latestActiveThreadId = threadId;
 		await this.request('turn/start', turnStartParams);
 	}
 
@@ -1429,6 +1568,7 @@ class LocalCodexService {
 
 	private handleNotification(method: string, params: Record<string, unknown> | null): void {
 		const safeParams = params ?? {};
+		if (this.handleRawContextNotification(method, safeParams)) return;
 
 		if (method === 'thread/started') {
 			const thread = asRecord(safeParams.thread) as ThreadRecord | null;
@@ -1442,10 +1582,26 @@ class LocalCodexService {
 			const threadId = readThreadId(safeParams);
 			const turnId = readTurnId(safeParams);
 			if (threadId && turnId) {
+				this.turnThreads.set(turnId, threadId);
+				this.latestActiveThreadId = threadId;
 				this.emit({
 					type: method === 'turn/started' ? 'turn.started' : 'turn.completed',
 					threadId,
-					turnId
+					turnId,
+					contextUsage: normalizeContextUsage(safeParams)
+				});
+			}
+			return;
+		}
+
+		if (method === 'context/updated' || method === 'contextUsage/updated' || method === 'tokenUsage/updated') {
+			const threadId = readThreadId(safeParams);
+			const contextUsage = normalizeContextUsage(safeParams);
+			if (threadId && contextUsage) {
+				this.emit({
+					type: 'context.updated',
+					threadId,
+					contextUsage
 				});
 			}
 			return;
@@ -1574,6 +1730,38 @@ class LocalCodexService {
 		}
 	}
 
+	private handleRawContextNotification(method: string, params: Record<string, unknown>): boolean {
+		const payload = asRecord(params.payload) ?? params;
+		const type = readString(payload.type) ?? readString(params.type) ?? method;
+		const isContextEvent =
+			type === 'task_started' ||
+			type === 'token_count' ||
+			method === 'event_msg' ||
+			method === 'event';
+		if (!isContextEvent) return false;
+
+		const turnId = readString(payload.turn_id) ?? readString(payload.turnId) ?? readTurnId(params);
+		const mappedThreadId = turnId ? this.turnThreads.get(turnId) ?? null : null;
+		const threadId = readThreadId(params) ?? mappedThreadId ?? this.latestActiveThreadId;
+		const contextUsage = normalizeContextUsage(payload);
+
+		if (turnId && threadId) {
+			this.turnThreads.set(turnId, threadId);
+		}
+		if (threadId && (type === 'task_started' || type === 'token_count')) {
+			this.latestActiveThreadId = threadId;
+		}
+		if (threadId && contextUsage) {
+			this.emit({
+				type: 'context.updated',
+				threadId,
+				contextUsage
+			});
+		}
+
+		return method === 'event_msg' || method === 'event';
+	}
+
 	private emit(event: ConsoleEvent): void {
 		const id = ++this.eventSequence;
 		this.eventBacklog.push({ id, event });
@@ -1594,6 +1782,8 @@ class LocalCodexService {
 
 		this.pendingRequests.clear();
 		this.pendingApprovals.clear();
+		this.turnThreads.clear();
+		this.latestActiveThreadId = null;
 		this.process = null;
 		this.buffer = '';
 
