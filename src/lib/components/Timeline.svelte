@@ -273,6 +273,25 @@
 		return batches.find((batch) => batch.index === index) ?? null;
 	}
 
+	function isLastBatch(
+		batch: { index: number },
+		batches: Array<{ index: number }>
+	) {
+		return batch.index === batches.at(-1)?.index;
+	}
+
+	function shouldOpenLatestUnfinishedWork(
+		turn: TimelineTurn,
+		turnIndex: number,
+		batch: { index: number },
+		batches: Array<{ index: number }>
+	) {
+		const isLatestVisibleTurn = turnIndex === visibleTurns.length - 1;
+		if (!isLatestVisibleTurn || liveEntries.length > 0 || preservedEntries.length > 0) return false;
+		if (turn.entries.some(isFinalAnswer)) return false;
+		return isLastBatch(batch, batches);
+	}
+
 	function diffStats(diff: string) {
 		let additions = 0;
 		let deletions = 0;
@@ -506,8 +525,8 @@
 	</article>
 {/snippet}
 
-{#snippet renderWorkCollapse(workEntries: TimelineEntry[], statusLabel: string, durationLabel = '', workSummary = '')}
-	<details class="work-collapse" open={workEntries.some(isActiveCommand)}>
+{#snippet renderWorkCollapse(workEntries: TimelineEntry[], statusLabel: string, durationLabel = '', workSummary = '', defaultOpen = false)}
+	<details class="work-collapse" open={defaultOpen || workEntries.some(isActiveCommand)}>
 		<summary class="work-summary">
 			<span class="work-summary-main">
 				<span>{statusLabel}</span>
@@ -582,7 +601,7 @@
 		<p class="empty">Start a thread to see activity.</p>
 	{/if}
 
-	{#each visibleTurns as turn (turn.id)}
+	{#each visibleTurns as turn, turnIndex (turn.id)}
 		{@const analysis = analyseTurn(turn.entries)}
 		{@const changeSummary = buildChangeSummary(turn.entries)}
 		<section class="turn" id={`turn-${turn.id}`} data-turn-id={turn.id}>
@@ -611,7 +630,13 @@
 				{#each turn.entries as entry, index (entry.id)}
 					{@const batch = batchAt(analysis.batches, index)}
 					{#if batch}
-						{@render renderWorkCollapse(batch.entries, batch.summary, batch.duration, '')}
+						{@render renderWorkCollapse(
+							batch.entries,
+							batch.summary,
+							batch.duration,
+							'',
+							shouldOpenLatestUnfinishedWork(turn, turnIndex, batch, analysis.batches)
+						)}
 					{/if}
 
 					{#if !isInlineFoldableWork(entry)}
@@ -651,7 +676,7 @@
 			{#each liveEntries as entry, index (entry.id)}
 				{@const batch = batchAt(liveBatches, index)}
 				{#if batch}
-					{@render renderWorkCollapse(batch.entries, batch.summary, batch.duration, '')}
+					{@render renderWorkCollapse(batch.entries, batch.summary, batch.duration, '', isLastBatch(batch, liveBatches))}
 				{/if}
 				{#if !isInlineFoldableWork(entry)}
 					{@render renderEntry(entry)}

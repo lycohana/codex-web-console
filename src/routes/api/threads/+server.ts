@@ -1,53 +1,13 @@
 import { error, json } from '@sveltejs/kit';
 
 import { codex } from '$lib/server/codex';
-import type {
-	ModelSelection,
-	PermissionMode,
-	ReasoningEffort,
-	ServiceTier,
-	ThreadSummary
-} from '$lib/types';
+import { parseThreadRequestBody, RequestValidationError } from '$lib/server/thread-request';
+import type { ThreadSummary } from '$lib/types';
 
 function requireAuth(locals: App.Locals) {
 	if (!locals.authenticated) {
 		throw error(401, 'Unauthorized');
 	}
-}
-
-function parsePermissionMode(value: unknown): PermissionMode {
-	return value === 'auto' || value === 'full' ? value : 'default';
-}
-
-function parseReasoningEffort(value: unknown): ReasoningEffort | null {
-	return value === 'none' ||
-		value === 'minimal' ||
-		value === 'low' ||
-		value === 'medium' ||
-		value === 'high' ||
-		value === 'xhigh'
-		? value
-		: null;
-}
-
-function parseServiceTier(value: unknown): ServiceTier | null {
-	return value === 'fast' || value === 'flex' ? value : null;
-}
-
-function parseModelSelection(value: unknown): ModelSelection | undefined {
-	if (!value || typeof value !== 'object') return undefined;
-	const record = value as Record<string, unknown>;
-	const model = typeof record.model === 'string' ? record.model.trim() : '';
-	const effort = parseReasoningEffort(record.effort);
-	const serviceTier = parseServiceTier(record.serviceTier);
-	const provider = typeof record.provider === 'string' ? record.provider.trim() : '';
-
-	return {
-		...(model ? { model } : {}),
-		...(effort ? { effort } : {}),
-		...(serviceTier ? { serviceTier } : {}),
-		...(provider ? { provider } : {})
-	};
 }
 
 function buildThreadListSignature(threads: ThreadSummary[]): string {
@@ -89,43 +49,29 @@ export const GET = async ({ locals, url }) => {
 export const POST = async ({ locals, request }) => {
 	requireAuth(locals);
 
-	let body: {
-		cwd?: string;
-		prompt?: string;
-		permissionMode?: unknown;
-		modelSelection?: unknown;
-		images?: unknown;
-	};
+	let body: Parameters<typeof parseThreadRequestBody>[0];
 
 	try {
-		body = (await request.json()) as {
-			cwd?: string;
-			prompt?: string;
-			permissionMode?: unknown;
-			modelSelection?: unknown;
-			images?: unknown;
-		};
+		body = (await request.json()) as Parameters<typeof parseThreadRequestBody>[0];
 	} catch {
 		return json({ error: 'Request body must be valid JSON.' }, { status: 400 });
 	}
 
-	const cwd = String(body.cwd ?? '').trim();
-	const prompt = String(body.prompt ?? '').trim();
-	const permissionMode = parsePermissionMode(body.permissionMode);
-	const modelSelection = parseModelSelection(body.modelSelection);
-	const images = Array.isArray(body.images)
-		? body.images.filter((img): img is string => typeof img === 'string' && img.length > 0)
-		: undefined;
-
-	if (!cwd || !prompt) {
-		return json({ error: 'Workspace path and prompt are required.' }, { status: 400 });
-	}
-
 	try {
+		const parsed = parseThreadRequestBody(body);
 		return json({
-			thread: await codex.createThread(cwd, prompt, permissionMode, modelSelection, images)
+			thread: await codex.createThread(
+				parsed.cwd,
+				parsed.prompt,
+				parsed.permissionMode,
+				parsed.modelSelection,
+				parsed.images
+			)
 		});
 	} catch (err) {
+		if (err instanceof RequestValidationError) {
+			return json({ error: err.message }, { status: err.status });
+		}
 		const message = err instanceof Error ? err.message : String(err);
 		return json({ error: message }, { status: 500 });
 	}

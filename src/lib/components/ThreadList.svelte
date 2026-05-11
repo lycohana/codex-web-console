@@ -180,6 +180,13 @@
 		onManage(thread, { x: event.clientX, y: event.clientY });
 	}
 
+	function openThreadManagerFromButton(event: MouseEvent | KeyboardEvent, thread: ThreadSummary) {
+		event.preventDefault();
+		event.stopPropagation();
+		const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+		onManage(thread, { x: rect.right, y: rect.bottom + 6 });
+	}
+
 	$effect(() => {
 		const groupKeys = threadGroups.map((group) => group.key);
 
@@ -245,23 +252,42 @@
 					{#if !isGroupCollapsed(group)}
 						<div class="workspace-thread-list" id={`workspace-thread-list-${index}`}>
 							{#each visibleGroupThreads(group) as thread (thread.id)}
-								<button
-									type="button"
+								<div
 									class:selected={thread.id === selectedThreadId}
-									class="thread-item"
-									onclick={() => onSelect(thread.id)}
-									oncontextmenu={(event) => openThreadManager(event, thread)}
+									class="thread-item-row"
 								>
-									<span class="thread-title">{thread.title}</span>
-									<span class="thread-preview">{thread.preview || thread.cwd}</span>
-									<div class="thread-meta">
-										<span class="status {statusClass(thread.status)}">
-											<span class="status-dot"></span>
-											{thread.status === 'idle' ? 'idle' : thread.status}
+									<button
+										type="button"
+										class="thread-item"
+										onclick={() => onSelect(thread.id)}
+										oncontextmenu={(event) => openThreadManager(event, thread)}
+									>
+										<span class="thread-copy">
+											<span class="thread-title">{thread.title}</span>
+											<span class="thread-preview">{thread.preview || thread.cwd}</span>
+											<span class="thread-meta">
+												<span class="status {statusClass(thread.status)}">
+													<span class="status-dot"></span>
+													{thread.status === 'idle' ? 'idle' : thread.status}
+												</span>
+												<span>{formatRelativeTime(thread.updatedAt)}</span>
+											</span>
 										</span>
-										<span>{formatRelativeTime(thread.updatedAt)}</span>
-									</div>
-								</button>
+									</button>
+									<button
+										type="button"
+										class="thread-manage"
+										aria-label={`管理对话：${thread.title}`}
+										title="管理"
+										onclick={(event) => openThreadManagerFromButton(event, thread)}
+									>
+										<svg viewBox="0 0 20 20" aria-hidden="true">
+											<circle cx="5" cy="10" r="1.5" />
+											<circle cx="10" cy="10" r="1.5" />
+											<circle cx="15" cy="10" r="1.5" />
+										</svg>
+									</button>
+								</div>
 							{/each}
 							{#if group.threads.length > maxCollapsedThreads}
 								<button
