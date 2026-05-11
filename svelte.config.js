@@ -1,5 +1,15 @@
 import adapter from 'svelte-adapter-bun';
 
+function trustedOrigins() {
+	const origins = new Set(['https://codex.lycohana.cn']);
+	const configured = process.env.CODEX_WEB_CONSOLE_TRUSTED_ORIGINS ?? process.env.ORIGIN ?? '';
+	for (const origin of configured.split(',')) {
+		const trimmed = origin.trim();
+		if (trimmed) origins.add(trimmed);
+	}
+	return [...origins];
+}
+
 /** @type {import('@sveltejs/kit').Config} */
 const config = {
 	compilerOptions: {
@@ -7,7 +17,10 @@ const config = {
 		runes: ({ filename }) => (filename.split(/[/\\]/).includes('node_modules') ? undefined : true)
 	},
 	kit: {
-		adapter: adapter()
+		adapter: adapter(),
+		csrf: {
+			trustedOrigins: trustedOrigins()
+		}
 	}
 };
 
