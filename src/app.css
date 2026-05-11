@@ -427,13 +427,22 @@ button.danger:hover { background: #d63029; }
 .thread-manage {
 	width: 28px;
 	height: 28px;
+	min-width: 28px;
+	padding: 0;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
 	border-radius: 8px;
+	border: 0;
+	background: transparent;
 	color: var(--ink-faint);
+	box-shadow: none;
 	opacity: 0;
 	transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+
+.thread-manage:hover {
+	background: transparent;
 }
 
 .thread-manage svg {
