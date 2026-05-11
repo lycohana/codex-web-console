@@ -1,13 +1,23 @@
 import { dev } from '$app/environment';
 import { env } from '$env/dynamic/private';
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { Cookies } from '@sveltejs/kit';
+import type { Cookies, RequestEvent } from '@sveltejs/kit';
+
+import { isLocalSetupRequestLike, validateNewToken } from '$lib/server/auth-utils';
 
 const AUTH_COOKIE = 'cwc_auth';
 const DEV_FALLBACK_TOKEN = process.env.CODEX_WEB_CONSOLE_DEV_FALLBACK_TOKEN || 'codex-web-console';
+const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
+
+type SessionRecord = {
+	tokenDigest: string;
+	expiresAt: number;
+};
+
+const sessions = new Map<string, SessionRecord>();
 
 function digest(value: string): string {
 	return createHash('sha256').update(value).digest('hex');
@@ -15,6 +25,12 @@ function digest(value: string): string {
 
 function getConfigPath(): string {
 	return join(homedir(), '.codex-web-console', 'config.json');
+}
+
+function safeEqual(left: string, right: string): boolean {
+	const expected = Buffer.from(left);
+	const actual = Buffer.from(right);
+	return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
 function readTokenFromFile(): string | null {
@@ -69,12 +85,19 @@ export function readAuthState(cookies: Cookies): {
 		};
 	}
 
-	const expected = Buffer.from(digest(configured.token));
-	const actual = Buffer.from(cookie);
+	const session = sessions.get(cookie);
+	const now = Date.now();
+	if (!session || session.expiresAt <= now) {
+		if (session) sessions.delete(cookie);
+		return {
+			authenticated: false,
+			tokenConfigured: true,
+			fallbackActive: configured.fallbackActive
+		};
+	}
 
 	return {
-		authenticated:
-			expected.length === actual.length && timingSafeEqual(expected, actual),
+		authenticated: safeEqual(session.tokenDigest, digest(configured.token)),
 		tokenConfigured: true,
 		fallbackActive: configured.fallbackActive
 	};
@@ -86,10 +109,7 @@ export function verifySubmittedToken(token: string): boolean {
 		return false;
 	}
 
-	const expected = Buffer.from(digest(configured.token));
-	const actual = Buffer.from(digest(token.trim()));
-
-	return expected.length === actual.length && timingSafeEqual(expected, actual);
+	return safeEqual(digest(configured.token), digest(token.trim()));
 }
 
 export function writeAuthCookie(cookies: Cookies, secure: boolean): void {
@@ -98,7 +118,13 @@ export function writeAuthCookie(cookies: Cookies, secure: boolean): void {
 		return;
 	}
 
-	cookies.set(AUTH_COOKIE, digest(configured.token), {
+	const sessionId = randomBytes(32).toString('base64url');
+	sessions.set(sessionId, {
+		tokenDigest: digest(configured.token),
+		expiresAt: Date.now() + SESSION_TTL_MS
+	});
+
+	cookies.set(AUTH_COOKIE, sessionId, {
 		path: '/',
 		httpOnly: true,
 		sameSite: 'lax',
@@ -108,6 +134,8 @@ export function writeAuthCookie(cookies: Cookies, secure: boolean): void {
 }
 
 export function clearAuthCookie(cookies: Cookies): void {
+	const sessionId = cookies.get(AUTH_COOKIE);
+	if (sessionId) sessions.delete(sessionId);
 	cookies.delete(AUTH_COOKIE, { path: '/' });
 }
 
@@ -122,3 +150,13 @@ export function saveTokenToConfig(token: string): void {
 export function readTokenFromConfig(): string | null {
 	return readTokenFromFile();
 }
+
+export function isLocalSetupRequest(event: Pick<RequestEvent, 'url' | 'request' | 'getClientAddress'>): boolean {
+	return isLocalSetupRequestLike(event);
+}
+
+export function resetAuthSessionsForTests(): void {
+	sessions.clear();
+}
+
+export { validateNewToken };

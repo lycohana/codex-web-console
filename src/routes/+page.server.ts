@@ -2,7 +2,15 @@ import { homedir } from 'node:os';
 
 import { fail, redirect } from '@sveltejs/kit';
 
-import { clearAuthCookie, saveTokenToConfig, verifySubmittedToken, writeAuthCookie } from '$lib/server/auth';
+import {
+	clearAuthCookie,
+	getConfiguredToken,
+	isLocalSetupRequest,
+	saveTokenToConfig,
+	validateNewToken,
+	verifySubmittedToken,
+	writeAuthCookie
+} from '$lib/server/auth';
 import { codex } from '$lib/server/codex';
 
 /**
@@ -96,16 +104,22 @@ export const load = async ({ locals, url }) => {
 };
 
 export const actions = {
-	setup: async ({ request, cookies, url }) => {
+	setup: async (event) => {
+		const { request, cookies, url } = event;
+		if (getConfiguredToken().token) {
+			return fail(400, { setupError: 'Token is already configured.' });
+		}
+
+		if (!isLocalSetupRequest(event)) {
+			return fail(403, { setupError: 'Initial setup is only allowed from localhost.' });
+		}
+
 		const form = await request.formData();
 		const token = String(form.get('token') ?? '').trim();
 
-		if (!token) {
-			return fail(400, { setupError: 'Token is required.' });
-		}
-
-		if (token.length < 4) {
-			return fail(400, { setupError: 'Token must be at least 4 characters.' });
+		const tokenError = validateNewToken(token);
+		if (tokenError) {
+			return fail(400, { setupError: tokenError });
 		}
 
 		saveTokenToConfig(token);
