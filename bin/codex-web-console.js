@@ -31,6 +31,7 @@ function parseArgs(argv) {
 	const options = {
 		host: process.env.HOST || '127.0.0.1',
 		port: process.env.PORT ? Number(process.env.PORT) : null,
+		portExplicit: Boolean(process.env.PORT),
 		open: true
 	};
 
@@ -44,8 +45,10 @@ function parseArgs(argv) {
 			options.host = arg.slice('--host='.length) || options.host;
 		} else if (arg === '--port') {
 			options.port = Number(argv[++index]);
+			options.portExplicit = true;
 		} else if (arg.startsWith('--port=')) {
 			options.port = Number(arg.slice('--port='.length));
+			options.portExplicit = true;
 		} else if (arg === '--help' || arg === '-h') {
 			console.log(`Usage: codex-web-console [--host 127.0.0.1] [--port 3000] [--no-open]`);
 			process.exit(0);
@@ -60,14 +63,37 @@ function parseArgs(argv) {
 	return options;
 }
 
-function findFreePort(start = 5173) {
+function canListen(port, host) {
+	return new Promise((resolveCanListen) => {
+		const server = createServer();
+		server.once('error', () => resolveCanListen(false));
+		server.listen(port, host, () => {
+			server.close(() => resolveCanListen(true));
+		});
+	});
+}
+
+async function resolvePort(options, fallbackPort) {
+	const port = options.port ?? fallbackPort;
+	if (options.portExplicit) {
+		if (!(await canListen(port, options.host))) {
+			console.error(`Port ${port} is already in use on ${options.host}.`);
+			process.exit(1);
+		}
+		return port;
+	}
+
+	return findFreePort(port, options.host);
+}
+
+function findFreePort(start = 5173, host = '127.0.0.1') {
 	return new Promise((resolvePort) => {
 		const server = createServer();
-		server.listen(start, '127.0.0.1', () => {
+		server.listen(start, host, () => {
 			const port = server.address().port;
 			server.close(() => resolvePort(port));
 		});
-		server.on('error', () => resolvePort(findFreePort(start + 1)));
+		server.on('error', () => resolvePort(findFreePort(start + 1, host)));
 	});
 }
 
@@ -108,7 +134,7 @@ async function main() {
 	const options = parseArgs(process.argv.slice(2));
 
 	if (existsSync(buildEntry)) {
-		const port = String(await findFreePort(options.port ?? 3000));
+		const port = String(await resolvePort(options, 3000));
 		const host = options.host;
 		const url = `http://${host}:${port}`;
 		console.log(`Starting codex-web-console at ${url}`);
@@ -121,7 +147,7 @@ async function main() {
 		return;
 	}
 
-	const port = String(await findFreePort(options.port ?? 5173));
+	const port = String(await resolvePort(options, 5173));
 	const args = ['vite', 'dev', '--host', options.host, '--port', port];
 	if (options.open) args.push('--open');
 	spawnServer('npx', args);
