@@ -16,11 +16,15 @@ on:
         required: true
         default: false
         type: boolean
-      release_version:
-        description: exact package version to publish manually, for example 1.0.1
-        required: false
-        default: ""
-        type: string
+      version_bump:
+        description: version bump to publish manually
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 
 permissions:
   contents: write
@@ -67,11 +71,10 @@ jobs:
             echo "Manual publish skipped because release_now is not true."
             exit 0
           fi
-          if [ -z "${{ inputs.release_version }}" ]; then
-            echo "::error::release_version is required when release_now=true."
-            exit 1
-          fi
-          node -e "const v='${{ inputs.release_version }}'; if(!/^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$/.test(v)){ console.error('Invalid semver:', v); process.exit(1); }"
+          case "${{ inputs.version_bump }}" in
+            patch|minor|major) ;;
+            *) echo "::error::version_bump must be patch, minor, or major."; exit 1 ;;
+          esac
 
       - name: Publish specified version to npm
         if: inputs.release_now == true
@@ -80,8 +83,9 @@ jobs:
           NODE_AUTH_TOKEN: ${{ inputs.publish_auth == 'npm-token' && secrets.NPM_TOKEN || '' }}
         run: |
           PACKAGE_NAME=$(node -p "require('./package.json').name")
-          TARGET_VERSION="${{ inputs.release_version }}"
-          echo "Preparing ${PACKAGE_NAME}@${TARGET_VERSION}"
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          TARGET_VERSION=$(node -e "const [major, minor, patch] = '${CURRENT_VERSION}'.split('.').map(Number); const bump = '${{ inputs.version_bump }}'; const next = bump === 'major' ? [major + 1, 0, 0] : bump === 'minor' ? [major, minor + 1, 0] : [major, minor, patch + 1]; console.log(next.join('.'));")
+          echo "Preparing ${PACKAGE_NAME}@${TARGET_VERSION} (${CURRENT_VERSION} + ${{ inputs.version_bump }})"
           if npm view "${PACKAGE_NAME}@${TARGET_VERSION}" version --registry=https://registry.npmjs.org > /dev/null 2>&1; then
             echo "::error::${PACKAGE_NAME}@${TARGET_VERSION} already exists on npm."
             exit 1
