@@ -83,12 +83,13 @@ jobs:
           NODE_AUTH_TOKEN: ${{ inputs.publish_auth == 'npm-token' && secrets.NPM_TOKEN || '' }}
         run: |
           PACKAGE_NAME=$(node -p "require('./package.json').name")
-          CURRENT_VERSION=$(node -p "require('./package.json').version")
-          TARGET_VERSION=$(node -e "const [major, minor, patch] = '${CURRENT_VERSION}'.split('.').map(Number); const bump = '${{ inputs.version_bump }}'; const next = bump === 'major' ? [major + 1, 0, 0] : bump === 'minor' ? [major, minor + 1, 0] : [major, minor, patch + 1]; console.log(next.join('.'));")
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          CURRENT_VERSION=$(npm view "${PACKAGE_NAME}" version --registry=https://registry.npmjs.org 2>/dev/null || echo "${PACKAGE_VERSION}")
+          TARGET_VERSION=$(node -e "const bump='${{ inputs.version_bump }}'; let [major, minor, patch] = '${CURRENT_VERSION}'.split('.').map(Number); if(![major, minor, patch].every(Number.isInteger)) throw new Error('Invalid current version: ${CURRENT_VERSION}'); const next=()=>{ if(bump==='major'){ major += 1; minor = 0; patch = 0; } else if(bump==='minor'){ minor += 1; patch = 0; } else { patch += 1; } return [major, minor, patch].join('.'); }; console.log(next());")
+          while npm view "${PACKAGE_NAME}@${TARGET_VERSION}" version --registry=https://registry.npmjs.org > /dev/null 2>&1; do
+            echo "${PACKAGE_NAME}@${TARGET_VERSION} already exists on npm, bumping again."
+            TARGET_VERSION=$(node -e "const bump='${{ inputs.version_bump }}'; let [major, minor, patch] = '${TARGET_VERSION}'.split('.').map(Number); if(bump==='major'){ major += 1; minor = 0; patch = 0; } else if(bump==='minor'){ minor += 1; patch = 0; } else { patch += 1; } console.log([major, minor, patch].join('.'));")
+          done
           echo "Preparing ${PACKAGE_NAME}@${TARGET_VERSION} (${CURRENT_VERSION} + ${{ inputs.version_bump }})"
-          if npm view "${PACKAGE_NAME}@${TARGET_VERSION}" version --registry=https://registry.npmjs.org > /dev/null 2>&1; then
-            echo "::error::${PACKAGE_NAME}@${TARGET_VERSION} already exists on npm."
-            exit 1
-          fi
           npm pkg set version="${TARGET_VERSION}"
           npm publish
