@@ -153,8 +153,7 @@ async function main() {
 		if (options.open) openBrowser(url);
 		spawnServer('bun', [buildEntry], {
 			HOST: host,
-			PORT: port,
-			ORIGIN: process.env.ORIGIN || url
+			PORT: port
 		});
 		return;
 	}

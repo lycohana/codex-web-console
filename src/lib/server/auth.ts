@@ -1,26 +1,52 @@
-import { dev } from '$app/environment';
-import { env } from '$env/dynamic/private';
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHmac, createHash, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Cookies, RequestEvent } from '@sveltejs/kit';
 
-import { isLocalSetupRequestLike, validateNewToken } from '$lib/server/auth-utils';
+import { isLocalSetupRequestLike, validateNewToken } from './auth-utils';
 
 const AUTH_COOKIE = 'cwc_auth';
 const DEV_FALLBACK_TOKEN = process.env.CODEX_WEB_CONSOLE_DEV_FALLBACK_TOKEN || 'codex-web-console';
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
+const SESSION_VERSION = 'v2';
+const dev = process.env.NODE_ENV !== 'production';
 
 type SessionRecord = {
 	tokenDigest: string;
 	expiresAt: number;
 };
 
-const sessions = new Map<string, SessionRecord>();
-
 function digest(value: string): string {
 	return createHash('sha256').update(value).digest('hex');
+}
+
+function sessionSecret(): string {
+	return digest(`codex-web-console:${readAccessToken() ?? DEV_FALLBACK_TOKEN}`);
+}
+
+function signSession(value: string): string {
+	return createHmac('sha256', sessionSecret()).update(value).digest('base64url');
+}
+
+function createSessionCookie(token: string, expiresAt: number): string {
+	const payload = `${SESSION_VERSION}.${expiresAt}.${digest(token)}`;
+	return `${payload}.${signSession(payload)}`;
+}
+
+function parseSessionCookie(cookie: string): SessionRecord | null {
+	const parts = cookie.split('.');
+	if (parts.length !== 4) return null;
+	const [version, expiresAtText, tokenDigest, signature] = parts;
+	if (version !== SESSION_VERSION) return null;
+
+	const expiresAt = Number(expiresAtText);
+	if (!Number.isFinite(expiresAt)) return null;
+
+	const payload = `${version}.${expiresAtText}.${tokenDigest}`;
+	if (!safeEqual(signature, signSession(payload))) return null;
+
+	return { tokenDigest, expiresAt };
 }
 
 function getConfigPath(): string {
@@ -47,7 +73,7 @@ function readTokenFromFile(): string | null {
 }
 
 function readAccessToken(): string | null {
-	const envToken = env.CODEX_WEB_CONSOLE_TOKEN?.trim();
+	const envToken = process.env.CODEX_WEB_CONSOLE_TOKEN?.trim();
 	if (envToken) return envToken;
 
 	return readTokenFromFile();
@@ -85,10 +111,9 @@ export function readAuthState(cookies: Cookies): {
 		};
 	}
 
-	const session = sessions.get(cookie);
+	const session = parseSessionCookie(cookie);
 	const now = Date.now();
 	if (!session || session.expiresAt <= now) {
-		if (session) sessions.delete(cookie);
 		return {
 			authenticated: false,
 			tokenConfigured: true,
@@ -118,13 +143,13 @@ export function writeAuthCookie(cookies: Cookies, secure: boolean): void {
 		return;
 	}
 
-	const sessionId = randomBytes(32).toString('base64url');
-	sessions.set(sessionId, {
+	const record = {
 		tokenDigest: digest(configured.token),
 		expiresAt: Date.now() + SESSION_TTL_MS
-	});
+	};
+	const persistentSession = createSessionCookie(configured.token, record.expiresAt);
 
-	cookies.set(AUTH_COOKIE, sessionId, {
+	cookies.set(AUTH_COOKIE, persistentSession, {
 		path: '/',
 		httpOnly: true,
 		sameSite: 'lax',
@@ -134,8 +159,6 @@ export function writeAuthCookie(cookies: Cookies, secure: boolean): void {
 }
 
 export function clearAuthCookie(cookies: Cookies): void {
-	const sessionId = cookies.get(AUTH_COOKIE);
-	if (sessionId) sessions.delete(sessionId);
 	cookies.delete(AUTH_COOKIE, { path: '/' });
 }
 
@@ -156,7 +179,7 @@ export function isLocalSetupRequest(event: Pick<RequestEvent, 'url' | 'request' 
 }
 
 export function resetAuthSessionsForTests(): void {
-	sessions.clear();
+	// Kept for older tests/callers. Auth sessions are encoded in signed cookies.
 }
 
 export { validateNewToken };

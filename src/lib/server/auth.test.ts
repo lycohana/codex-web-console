@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
+import { readAuthState, resetAuthSessionsForTests, writeAuthCookie } from './auth';
 import { isLocalSetupRequestLike, validateNewToken } from './auth-utils';
 
 function setupEvent(hostname: string, headers: Record<string, string> = {}, client = '203.0.113.10') {
@@ -32,5 +33,23 @@ describe('setup request locality', () => {
 
 	test('rejects non-local setup attempts', () => {
 		expect(isLocalSetupRequestLike(setupEvent('example.test', { host: 'example.test' }, '203.0.113.10'))).toBe(false);
+	});
+});
+
+describe('auth cookie persistence', () => {
+	test('keeps web login after in-memory sessions are cleared', () => {
+		const store = new Map<string, string>();
+		const cookies = {
+			get: (name: string) => store.get(name),
+			set: (name: string, value: string) => { store.set(name, value); },
+			delete: (name: string) => { store.delete(name); }
+		};
+
+		writeAuthCookie(cookies as never, false);
+		expect(readAuthState(cookies as never).authenticated).toBe(true);
+
+		resetAuthSessionsForTests();
+
+		expect(readAuthState(cookies as never).authenticated).toBe(true);
 	});
 });

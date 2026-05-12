@@ -1,8 +1,10 @@
 import adapter from 'svelte-adapter-bun';
 
 function trustedOrigins() {
+	const configured = process.env.CODEX_WEB_CONSOLE_TRUSTED_ORIGINS ?? process.env.ORIGIN;
+	if (!configured) return ['*'];
+
 	const origins = new Set(['https://codex.lycohana.cn']);
-	const configured = process.env.CODEX_WEB_CONSOLE_TRUSTED_ORIGINS ?? process.env.ORIGIN ?? '';
 	for (const origin of configured.split(',')) {
 		const trimmed = origin.trim();
 		if (trimmed) origins.add(trimmed);
