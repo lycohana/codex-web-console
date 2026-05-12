@@ -1,4 +1,5 @@
-import { createReadStream } from 'node:fs';
+import { createReadStream, type Dirent } from 'node:fs';
+import { readdir } from 'node:fs/promises';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { homedir } from 'node:os';
 import { createInterface } from 'node:readline';
@@ -87,6 +88,7 @@ const REQUEST_TIMEOUT_MS = 30_000;
 const DIAGNOSTIC_PREVIEW_LIMIT = 800;
 const EVENT_BACKLOG_LIMIT = 5_000;
 const THREAD_READ_RETRY_DELAYS_MS = [100, 250, 500, 1_000];
+const rolloutPathCache = new Map<string, Promise<string | null>>();
 
 export type SequencedConsoleEvent = {
 	id: number;
@@ -210,6 +212,17 @@ function normalizeTimestamp(value: number | null | undefined): number | null {
 	}
 
 	return value < 10_000_000_000 ? value * 1000 : value;
+}
+
+function normalizeUnknownTimestamp(value: unknown): number | null {
+	const numeric = readNumber(value);
+	if (numeric !== null) return normalizeTimestamp(numeric);
+
+	const text = readString(value);
+	if (!text) return null;
+
+	const parsed = Date.parse(text);
+	return Number.isFinite(parsed) ? parsed : null;
 }
 
 function prettifyItemType(type: string): string {
@@ -342,6 +355,11 @@ function readContentText(value: unknown): string {
 function normalizeToolCall(item: ThreadItem): TimelineEntry {
 	const tool = asRecord(item.tool);
 	const server = asRecord(item.server);
+	const rawInput =
+		item.arguments ??
+		item.args ??
+		item.input ??
+		item.params;
 	const input =
 		readJsonText(item.arguments) ??
 		readJsonText(item.args) ??
@@ -363,6 +381,20 @@ function normalizeToolCall(item: ThreadItem): TimelineEntry {
 		readString(server?.name) ??
 		readString(item.server);
 
+	const planText = normalizeUpdatePlanText(toolName, rawInput);
+	if (planText) {
+		return {
+			id: item.id,
+			kind: 'plan',
+			label: 'Plan',
+			text: planText,
+			status: readString(item.status),
+			startedAt: normalizeTimestamp(readNumber(item.startedAt) ?? readNumber(item.started_at)),
+			completedAt: normalizeTimestamp(readNumber(item.completedAt) ?? readNumber(item.completed_at)),
+			durationMs: readNumber(item.durationMs) ?? readNumber(item.duration_ms)
+		};
+	}
+
 	// Extract images from tool result content blocks
 	const resultContent = asRecord(item.result)?.content ?? item.result;
 	const images = Array.isArray(resultContent) ? readImageUrls(resultContent) : readImageUrlsDeep({ result: resultContent });
@@ -381,6 +413,52 @@ function normalizeToolCall(item: ThreadItem): TimelineEntry {
 		durationMs: readNumber(item.durationMs) ?? readNumber(item.duration_ms),
 		...(images.length > 0 ? { images } : {})
 	};
+}
+
+function normalizeUpdatePlanText(toolName: string, rawInput: unknown): string | null {
+	if (toolName !== 'update_plan') return null;
+
+	const input = parseJsonRecord(rawInput);
+	if (!input) return null;
+
+	const rawPlan = Array.isArray(input.plan)
+		? input.plan
+		: Array.isArray(input.steps)
+			? input.steps
+			: null;
+	if (!rawPlan) return null;
+
+	const lines = rawPlan
+		.map((item) => {
+			const record = asRecord(item);
+			if (!record) return null;
+			const step = readString(record.step) ?? readString(record.text) ?? readString(record.title);
+			if (!step?.trim()) return null;
+			const status = readString(record.status)?.toLowerCase() ?? 'pending';
+			const marker =
+				status === 'completed' || status === 'complete' || status === 'done'
+					? '[x]'
+					: status === 'in_progress' || status === 'in-progress' || status === 'active' || status === 'running'
+						? '[-]'
+						: '[ ]';
+			return `- ${marker} ${step.trim()}`;
+		})
+		.filter((line): line is string => line !== null);
+
+	return lines.length > 0 ? lines.join('\n') : null;
+}
+
+function parseJsonRecord(value: unknown): Record<string, unknown> | null {
+	const direct = asRecord(value);
+	if (direct) return direct;
+	if (typeof value !== 'string') return null;
+
+	try {
+		const parsed = JSON.parse(value);
+		return asRecord(parsed);
+	} catch {
+		return null;
+	}
 }
 
 function readThreadId(params: Record<string, unknown>): string | null {
@@ -569,6 +647,92 @@ export async function readContextUsageFromRollout(rolloutPath: string | null | u
 	}
 
 	return latest;
+}
+
+async function findRolloutPathInDirectory(root: string, threadId: string): Promise<string | null> {
+	let entries: Dirent<string>[];
+
+	try {
+		entries = await readdir(root, { withFileTypes: true });
+	} catch {
+		return null;
+	}
+
+	for (const entry of entries) {
+		const fullPath = path.join(root, entry.name);
+		if (entry.isFile() && entry.name.includes(threadId) && entry.name.endsWith('.jsonl')) {
+			return fullPath;
+		}
+	}
+
+	for (const entry of entries) {
+		if (!entry.isDirectory()) continue;
+		const found = await findRolloutPathInDirectory(path.join(root, entry.name), threadId);
+		if (found) return found;
+	}
+
+	return null;
+}
+
+async function findRolloutPathForThread(threadId: string): Promise<string | null> {
+	const cached = rolloutPathCache.get(threadId);
+	if (cached) return cached;
+
+	const promise = (async () => {
+		const roots = [
+			path.join(homedir(), '.codex', 'sessions'),
+			path.join(homedir(), '.codex', 'archived_sessions')
+		];
+
+		for (const root of roots) {
+			const found = await findRolloutPathInDirectory(root, threadId);
+			if (found) return found;
+		}
+
+		return null;
+	})();
+
+	rolloutPathCache.set(threadId, promise);
+	return promise;
+}
+
+export async function readLatestPlanEntryFromRollout(rolloutPath: string | null | undefined): Promise<TimelineEntry | null> {
+	if (!rolloutPath) return null;
+	let latest: TimelineEntry | null = null;
+	let sequence = 0;
+
+	try {
+		const lines = createInterface({
+			input: createReadStream(rolloutPath, { encoding: 'utf-8' }),
+			crlfDelay: Infinity
+		});
+
+		for await (const line of lines) {
+			if (!line.includes('"update_plan"')) continue;
+
+			const record = asRecord(JSON.parse(line));
+			if (record?.type !== 'response_item') continue;
+
+			const payload = asRecord(record.payload);
+			if (!payload || payload.type !== 'function_call' || payload.name !== 'update_plan') continue;
+
+			sequence += 1;
+			const id = readString(payload.id) ?? readString(payload.call_id) ?? `rollout-plan-${sequence}`;
+			const [entry] = normalizeTimelineEntries({
+				...payload,
+				id,
+				type: 'function_call',
+				startedAt: normalizeUnknownTimestamp(record.timestamp),
+				completedAt: normalizeUnknownTimestamp(record.timestamp)
+			} as ThreadItem);
+
+			if (entry?.kind === 'plan') latest = entry;
+		}
+	} catch {
+		return null;
+	}
+
+	return latest ? { ...latest, id: `rollout-${latest.id}` } : null;
 }
 
 function normalizeReasoningEffort(value: unknown): ReasoningEffort | null {
@@ -904,13 +1068,36 @@ async function normalizeThreadDetail(
 		durationMs: turn.durationMs,
 		entries: turn.items.flatMap(normalizeTimelineEntries)
 	}));
+	const rolloutPath = readString(thread.path) ?? (await findRolloutPathForThread(thread.id));
+	const threadContextUsage = normalizeContextUsage(thread);
+	const hasPlanEntry = turns.some((turn) => turn.entries.some((entry) => entry.kind === 'plan'));
+	const [rolloutContextUsage, rolloutPlanEntry] = await Promise.all([
+		threadContextUsage ? Promise.resolve(null) : readContextUsageFromRollout(rolloutPath),
+		hasPlanEntry ? Promise.resolve(null) : readLatestPlanEntryFromRollout(rolloutPath)
+	]);
+
+	if (!hasPlanEntry && rolloutPlanEntry) {
+		if (turns.length > 0) {
+			turns[turns.length - 1].entries.push(rolloutPlanEntry);
+		} else {
+			turns.push({
+				id: `rollout-${thread.id}`,
+				status: 'completed',
+				errorMessage: null,
+				startedAt: rolloutPlanEntry.startedAt ?? null,
+				completedAt: rolloutPlanEntry.completedAt ?? null,
+				durationMs: null,
+				entries: [rolloutPlanEntry]
+			});
+		}
+	}
 
 	return {
 		thread: normalizeThreadSummary(thread),
 		turns,
 		approvals,
 		omittedTurnCount,
-		contextUsage: normalizeContextUsage(thread) ?? (await readContextUsageFromRollout(readString(thread.path)))
+		contextUsage: threadContextUsage ?? rolloutContextUsage
 	};
 }
 
@@ -1789,6 +1976,10 @@ class LocalCodexService {
 
 		this.emit({ type: 'error', message: error.message });
 	}
+}
+
+export function normalizeTimelineEntryForTest(item: ThreadItem): TimelineEntry {
+	return normalizeTimelineEntry(item);
 }
 
 const codex = new LocalCodexService();

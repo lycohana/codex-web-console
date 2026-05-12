@@ -98,6 +98,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let followLiveOutputFrame: number | null = null;
 	let mainScroller = $state<HTMLElement | null>(null);
 	let mobileComposerElement = $state<HTMLElement | null>(null);
+	let codexSidebarPanel = $state<HTMLElement | null>(null);
 	let autoScrolledThreadId = $state<string | null>(null);
 	let activeTurnIndex = $state(0);
 	let turnNavigationLockUntil = $state(0);
@@ -111,6 +112,9 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let contextMenuOpen = $state(false);
 	let modelListOpen = $state(false);
 	let speedListOpen = $state(false);
+	let codexSidebarOpen = $state(false);
+	let codexSidebarPinned = $state(false);
+	let codexSidebarPinRestored = $state(false);
 	let liveContextUsage = $state<Record<string, ContextUsage>>({});
 	let threadManagerDialog = $state<{
 		mode: 'menu' | 'rename' | 'delete';
@@ -344,6 +348,41 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	const visibleLiveEntryList = $derived.by(() =>
 		filterHistoricalLiveEntries(Object.values(liveEntries), visibleSelectedThread).filter(hasRenderableLiveEntry)
 	);
+	type ProgressItem = {
+		id: string;
+		text: string;
+		status: 'pending' | 'active' | 'done';
+	};
+	const latestProgressEntry = $derived.by(() => {
+		const entries: TimelineEntry[] = [];
+		for (const turn of visibleSelectedThread?.turns ?? []) {
+			entries.push(...turn.entries);
+		}
+		entries.push(...visibleLiveEntryList);
+
+		const structured = entries
+			.filter((entry) => entry.kind === 'plan' && entry.text?.trim())
+			.filter((entry) => parseProgressItems(entry.text ?? '').length > 0)
+			.at(-1);
+		if (structured) return structured;
+
+		const summary = entries
+			.filter((entry) => entry.kind === 'assistant' && entry.phase === 'final_answer' && entry.text?.trim())
+			.map((entry) => ({ ...entry, text: extractProgressSummaryText(entry.text ?? '') }))
+			.filter((entry) => entry.text && parseProgressItems(entry.text).length > 0)
+			.at(-1);
+		return summary ?? null;
+	});
+	const progressItems = $derived.by(() => parseProgressItems(latestProgressEntry?.text ?? ''));
+	const hasProgressItems = $derived(progressItems.length > 0);
+	const progressSummary = $derived.by(() => {
+		const total = progressItems.length;
+		const done = progressItems.filter((item) => item.status === 'done').length;
+		const active = progressItems.some((item) => item.status === 'active');
+		const allDone = total > 0 && done === total;
+		return { total, done, active, allDone };
+	});
+	const codexSidebarVisible = $derived(hasProgressItems && (codexSidebarOpen || codexSidebarPinned));
 	let runningTurnId = $state<string | null>(null);
 	let errorClearedAt = $state(0);
 	const historicalRunningTurnId = $derived.by(() => findActiveTurnId(visibleSelectedThread));
@@ -371,6 +410,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			: Math.min(100, Math.max(0, currentContextUsage.percentage))
 	);
 	const LAST_THREAD_STORAGE_KEY = 'lastThreadId';
+	const CODEX_SIDEBAR_PINNED_STORAGE_KEY = 'codexProgressSidebarPinned';
 
 	const enhanceRedirect: SubmitFunction = () => {
 		return async ({ result, update }) => {
@@ -390,6 +430,24 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		if (saved === 'dark' || saved === 'light') currentTheme = saved;
 	});
 
+	$effect(() => {
+		if (typeof localStorage === 'undefined') return;
+		codexSidebarPinned = localStorage.getItem(CODEX_SIDEBAR_PINNED_STORAGE_KEY) === 'true';
+		codexSidebarPinRestored = true;
+	});
+
+	$effect(() => {
+		if (typeof localStorage === 'undefined') return;
+		if (!codexSidebarPinRestored) return;
+		localStorage.setItem(CODEX_SIDEBAR_PINNED_STORAGE_KEY, String(codexSidebarPinned));
+	});
+
+	$effect(() => {
+		if (!hasProgressItems && !codexSidebarPinned) {
+			codexSidebarOpen = false;
+		}
+	});
+
 	function cycleTheme() {
 		const root = document.documentElement;
 		const next: typeof currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
@@ -397,6 +455,105 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		root.classList.remove('light', 'dark');
 		root.classList.add(next);
 		currentTheme = next;
+	}
+
+	function parseProgressItems(text: string): ProgressItem[] {
+		const lines = text
+			.split(/\r?\n/)
+			.map((line) => line.trim())
+			.filter(Boolean);
+
+		const items: ProgressItem[] = [];
+		for (const [index, line] of lines.entries()) {
+			let status: ProgressItem['status'] | null = null;
+			let content = line;
+
+			const checkbox = content.match(/^(?:[-*+]|\d+[.)])?\s*\[([ xX~\-])\]\s*(.+)$/);
+			if (checkbox) {
+				const marker = checkbox[1];
+				status = marker.toLowerCase() === 'x' ? 'done' : marker === '~' || marker === '-' ? 'active' : 'pending';
+				content = checkbox[2];
+			} else {
+				const statusPrefix = content.match(/^(?:[-*+]|\d+[.)])?\s*(完成|已完成|done|completed|进行中|处理中|正在|in progress|active|待处理|等待|pending)[:：]\s*(.+)$/i);
+				if (!statusPrefix) continue;
+				const marker = statusPrefix[1].toLowerCase();
+				status =
+					marker.includes('完成') || marker === 'done' || marker === 'completed'
+						? 'done'
+						: marker.includes('进行') || marker.includes('处理') || marker.includes('正在') || marker === 'in progress' || marker === 'active'
+							? 'active'
+							: 'pending';
+				content = statusPrefix[2];
+			}
+
+			content = content.replace(/^\*\*(.+)\*\*$/u, '$1').trim();
+			if (!content) continue;
+
+			const normalized = content.toLowerCase();
+			if (!status) {
+				if (
+					/^(done|completed|complete|finished)\b/.test(normalized) ||
+					content.startsWith('已完成') ||
+					content.includes('已完成') ||
+					content.includes('处理完成')
+				) {
+					status = 'done';
+				} else if (
+					/^(doing|active|in progress|working|running)\b/.test(normalized) ||
+					/进行中|处理中|正在/.test(content)
+				) {
+					status = 'active';
+				} else {
+					status = 'pending';
+				}
+			}
+
+			items.push({
+				id: `${index}-${content}`,
+				text: content,
+				status
+			});
+		}
+
+		if (!items.some((item) => item.status === 'active')) {
+			const firstPending = items.find((item) => item.status === 'pending');
+			if (firstPending && items.some((item) => item.status === 'done')) firstPending.status = 'active';
+		}
+
+		return items;
+	}
+
+	function extractProgressSummaryText(text: string): string {
+		const lines = text.split(/\r?\n/);
+		const progressLines = lines
+			.map((line) => line.trim())
+			.filter((line) => /^(completed|pending|in_progress|in-progress|active|running|done)\s{2,}.+/i.test(line))
+			.map((line) => {
+				const match = line.match(/^(completed|pending|in_progress|in-progress|active|running|done)\s{2,}(.+)$/i);
+				if (!match) return '';
+				const status = match[1].toLowerCase();
+				const marker =
+					status === 'completed' || status === 'done'
+						? '[x]'
+						: status === 'in_progress' || status === 'in-progress' || status === 'active' || status === 'running'
+							? '[-]'
+							: '[ ]';
+				return `- ${marker} ${match[2].trim()}`;
+			})
+			.filter(Boolean);
+
+		return progressLines.join('\n');
+	}
+
+	function progressStatusLabel(status: ProgressItem['status']) {
+		if (status === 'done') return '已完成';
+		if (status === 'active') return '进行中';
+		return '等待中';
+	}
+
+	function toggleCodexSidebarPinned() {
+		codexSidebarPinned = !codexSidebarPinned;
+		if (codexSidebarPinned) codexSidebarOpen = true;
 	}
 
 	$effect(() => {
@@ -2286,7 +2443,16 @@ import type { SubmitFunction } from '@sveltejs/kit';
 </svelte:head>
 
 <svelte:window
-	onclick={() => { permissionMenuOpen = false; modelMenuOpen = false; contextMenuOpen = false; modelListOpen = false; speedListOpen = false; }}
+onclick={(event) => {
+	permissionMenuOpen = false;
+	modelMenuOpen = false;
+	contextMenuOpen = false;
+	modelListOpen = false;
+	speedListOpen = false;
+	if (!codexSidebarPinned && !codexSidebarPanel?.contains(event.target as Node)) {
+		codexSidebarOpen = false;
+	}
+}}
 	onkeydown={(event) => {
 		if (event.key === 'Escape') {
 			permissionMenuOpen = false;
@@ -2294,6 +2460,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			contextMenuOpen = false;
 			modelListOpen = false;
 			speedListOpen = false;
+			if (!codexSidebarPinned) codexSidebarOpen = false;
 			closeThreadManagerDialog();
 		}
 	}}
@@ -2611,6 +2778,97 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			</div>
 		</main>
 	</div>
+
+	{#if !showingDraftThread && visibleSelectedThread && hasProgressItems}
+		<button
+			type="button"
+			class="codex-sidebar-tab"
+			class:visible={!codexSidebarVisible}
+			onclick={(event) => {
+				event.stopPropagation();
+				codexSidebarOpen = true;
+			}}
+			aria-label="打开进度侧栏"
+			title="打开进度侧栏"
+		>
+			<svg viewBox="0 0 24 24" aria-hidden="true">
+				<path d="M8 7.5h10M8 12h10M8 16.5h7" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" />
+				<path d="M4.8 7.5h.01M4.8 12h.01M4.8 16.5h.01" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" />
+			</svg>
+		</button>
+
+		<aside
+			bind:this={codexSidebarPanel}
+			class="codex-sidebar-panel"
+			class:visible={codexSidebarVisible}
+			class:pinned={codexSidebarPinned}
+			aria-label="Codex 进度侧栏"
+		>
+			<div class="codex-sidebar-card">
+				<header class="codex-sidebar-header">
+					<div>
+						<p>Codex</p>
+						<h3>进度</h3>
+					</div>
+					<div class="codex-sidebar-actions">
+						<button
+							type="button"
+							class="codex-sidebar-icon"
+							class:active={codexSidebarPinned}
+							onclick={toggleCodexSidebarPinned}
+							aria-label={codexSidebarPinned ? '取消固定侧栏' : '固定侧栏'}
+							title={codexSidebarPinned ? '取消固定侧栏' : '固定侧栏'}
+						>
+							<svg viewBox="0 0 20 20" aria-hidden="true">
+								<path d="M7.25 3.5h5.5l-.8 4.15 2.55 2.35v1.1H5.5V10l2.55-2.35-.8-4.15Z" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linejoin="round" />
+								<path d="M10 11.1v5.4" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" />
+							</svg>
+						</button>
+						<button
+							type="button"
+							class="codex-sidebar-icon"
+							onclick={() => {
+								codexSidebarOpen = false;
+								codexSidebarPinned = false;
+							}}
+							aria-label="关闭进度侧栏"
+							title="关闭进度侧栏"
+						>
+							<svg viewBox="0 0 20 20" aria-hidden="true">
+								<path d="M5 5l10 10M15 5 5 15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+							</svg>
+						</button>
+					</div>
+				</header>
+
+				<div class="codex-progress-summary">
+					<span class="codex-progress-kicker">
+						{`${progressSummary.done}/${progressSummary.total} 已完成`}
+					</span>
+					<span class="codex-progress-state" class:active={progressSummary.active}>
+						{progressSummary.active ? '同步中' : '已同步'}
+					</span>
+				</div>
+				<ol class="codex-progress-list">
+					{#each progressItems as item (item.id)}
+						<li class={`codex-progress-item is-${item.status}`}>
+							<span class="codex-progress-marker" aria-hidden="true">
+								{#if item.status === 'done'}
+									<svg viewBox="0 0 20 20">
+										<path d="M5 10.2 8.4 13.5 15 6.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+									</svg>
+								{/if}
+							</span>
+							<span class="codex-progress-copy">
+								<span>{item.text}</span>
+								<small>{progressStatusLabel(item.status)}</small>
+							</span>
+						</li>
+					{/each}
+				</ol>
+			</div>
+		</aside>
+	{/if}
 
 	{#if sidebarCollapsed}
 		<button
