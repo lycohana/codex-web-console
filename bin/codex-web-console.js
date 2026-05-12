@@ -63,12 +63,12 @@ function parseArgs(argv) {
 	return options;
 }
 
-function canListen(port, host) {
+function probeListen(port, host) {
 	return new Promise((resolveCanListen) => {
 		const server = createServer();
-		server.once('error', () => resolveCanListen(false));
+		server.once('error', (error) => resolveCanListen({ ok: false, error }));
 		server.listen(port, host, () => {
-			server.close(() => resolveCanListen(true));
+			server.close(() => resolveCanListen({ ok: true, error: null }));
 		});
 	});
 }
@@ -76,8 +76,20 @@ function canListen(port, host) {
 async function resolvePort(options, fallbackPort) {
 	const port = options.port ?? fallbackPort;
 	if (options.portExplicit) {
-		if (!(await canListen(port, options.host))) {
-			console.error(`Port ${port} is already in use on ${options.host}.`);
+		const probe = await probeListen(port, options.host);
+		if (!probe.ok) {
+			const code = probe.error?.code;
+			if (code === 'EADDRINUSE') {
+				console.error(`Port ${port} is already in use on ${options.host}.`);
+			} else if (code === 'EACCES') {
+				console.error(`Port ${port} cannot be used on ${options.host}: permission denied.`);
+				if (process.platform === 'win32') {
+					console.error('On Windows this is often caused by a system excluded port range.');
+					console.error('Check with: netsh interface ipv4 show excludedportrange protocol=tcp');
+				}
+			} else {
+				console.error(`Port ${port} cannot be used on ${options.host}: ${probe.error?.message ?? 'unknown error'}`);
+			}
 			process.exit(1);
 		}
 		return port;
