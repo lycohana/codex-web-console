@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 
-import { readAuthState, resetAuthSessionsForTests, writeAuthCookie } from './auth';
+import {
+	readAuthState,
+	resetAuthSessionsForTests,
+	shouldUseSecureAuthCookie,
+	writeAuthCookie
+} from './auth';
 import { isLocalSetupRequestLike, validateNewToken } from './auth-utils';
 
 function setupEvent(hostname: string, headers: Record<string, string> = {}, client = '203.0.113.10') {
@@ -51,5 +56,31 @@ describe('auth cookie persistence', () => {
 		resetAuthSessionsForTests();
 
 		expect(readAuthState(cookies as never).authenticated).toBe(true);
+	});
+});
+
+describe('auth cookie security', () => {
+	test('does not mark cookies secure for http IP access hidden behind ORIGIN', () => {
+		const request = new Request('http://8.134.209.128:1080/', {
+			headers: { host: '8.134.209.128:1080' }
+		});
+
+		expect(
+			shouldUseSecureAuthCookie({
+				url: new URL('https://127.0.0.1:1080/'),
+				request
+			})
+		).toBe(false);
+	});
+
+	test('uses forwarded proto when a proxy provides the original scheme', () => {
+		expect(
+			shouldUseSecureAuthCookie({
+				url: new URL('http://127.0.0.1:1080/'),
+				request: new Request('http://127.0.0.1:1080/', {
+					headers: { 'x-forwarded-proto': 'https' }
+				})
+			})
+		).toBe(true);
 	});
 });

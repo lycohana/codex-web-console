@@ -7,6 +7,7 @@ import {
 	getConfiguredToken,
 	isLocalSetupRequest,
 	saveTokenToConfig,
+	shouldUseSecureAuthCookie,
 	validateNewToken,
 	verifySubmittedToken,
 	writeAuthCookie
@@ -127,12 +128,13 @@ export const actions = {
 
 		// Verify immediately and log in
 		if (verifySubmittedToken(token)) {
-			writeAuthCookie(cookies, url.protocol === 'https:');
+			writeAuthCookie(cookies, shouldUseSecureAuthCookie(event));
 		}
 
 		throw redirect(303, '/');
 	},
-	login: async ({ request, cookies, url }) => {
+	login: async (event) => {
+		const { request, cookies } = event;
 		const form = await request.formData();
 		const token = String(form.get('token') ?? '').trim();
 
@@ -144,7 +146,7 @@ export const actions = {
 			return fail(400, { loginError: 'Token is invalid.' });
 		}
 
-		writeAuthCookie(cookies, url.protocol === 'https:');
+		writeAuthCookie(cookies, shouldUseSecureAuthCookie(event));
 		throw redirect(303, '/');
 	},
 	logout: async ({ cookies }) => {

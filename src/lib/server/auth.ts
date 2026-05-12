@@ -1,5 +1,6 @@
 import { createHmac, createHash, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { isIP } from 'node:net';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Cookies, RequestEvent } from '@sveltejs/kit';
@@ -160,6 +161,36 @@ export function writeAuthCookie(cookies: Cookies, secure: boolean): void {
 
 export function clearAuthCookie(cookies: Cookies): void {
 	cookies.delete(AUTH_COOKIE, { path: '/' });
+}
+
+function hostnameFromHost(value: string | null): string | null {
+	if (!value) return null;
+	const host = value.split(',')[0]?.trim().toLowerCase();
+	if (!host) return null;
+	if (host.startsWith('[')) return host.slice(1, host.indexOf(']'));
+	return host.replace(/:\d+$/, '');
+}
+
+function isPlainHttpFriendlyHost(hostname: string | null): boolean {
+	return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || Boolean(hostname && isIP(hostname));
+}
+
+export function shouldUseSecureAuthCookie(event: Pick<RequestEvent, 'url' | 'request'>): boolean {
+	const forwardedProto = event.request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim().toLowerCase();
+	if (forwardedProto === 'https') return true;
+	if (forwardedProto === 'http') return false;
+
+	const requestHost = hostnameFromHost(event.request.headers.get('host'));
+	if (isPlainHttpFriendlyHost(requestHost ?? event.url.hostname)) return false;
+
+	if (event.url.protocol !== 'https:') return false;
+
+	const host = event.request.headers.get('host')?.trim().toLowerCase();
+	if (host && host !== event.url.host.toLowerCase()) {
+		return false;
+	}
+
+	return true;
 }
 
 export function saveTokenToConfig(token: string): void {
