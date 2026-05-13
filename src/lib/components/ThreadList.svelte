@@ -23,7 +23,7 @@
 	} = $props();
 
 	const collapsedWorkspaceStorageKey = 'codex-web-console.collapsedWorkspaces';
-	const expandedThreadListStorageKey = 'codex-web-console.expandedThreadLists';
+	const legacyExpandedThreadListStorageKey = 'codex-web-console.expandedThreadLists';
 
 	let collapsedWorkspaceKeys = $state<string[]>([]);
 	let expandedThreadListKeys = $state<string[]>([]);
@@ -49,6 +49,11 @@
 	function writeStoredKeys(key: string, value: string[]) {
 		if (typeof localStorage === 'undefined') return;
 		localStorage.setItem(key, JSON.stringify(value));
+	}
+
+	function removeStoredKey(key: string) {
+		if (typeof localStorage === 'undefined') return;
+		localStorage.removeItem(key);
 	}
 
 	function sameKeys(left: string[], right: string[]) {
@@ -192,7 +197,8 @@
 
 		if (!restoredCollapseState) {
 			collapsedWorkspaceKeys = readStoredKeys(collapsedWorkspaceStorageKey) ?? groupKeys;
-			expandedThreadListKeys = readStoredKeys(expandedThreadListStorageKey) ?? [];
+			expandedThreadListKeys = [];
+			removeStoredKey(legacyExpandedThreadListStorageKey);
 			knownWorkspaceKeys = groupKeys;
 			restoredCollapseState = true;
 			return;
@@ -221,7 +227,6 @@
 	$effect(() => {
 		if (!restoredCollapseState) return;
 		writeStoredKeys(collapsedWorkspaceStorageKey, collapsedWorkspaceKeys);
-		writeStoredKeys(expandedThreadListStorageKey, expandedThreadListKeys);
 	});
 </script>
 
