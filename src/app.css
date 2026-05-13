@@ -2653,6 +2653,44 @@ button.workspace-option.selected .workspace-option-icon {
 	flex: 1;
 }
 
+.composer-image-button {
+	width: 42px;
+	height: 42px;
+	padding: 0;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 auto;
+	border-radius: 999px;
+	border: 1px solid var(--border);
+	background: color-mix(in srgb, var(--panel) 82%, transparent);
+	color: var(--ink-soft);
+	box-shadow: none;
+}
+
+.reply-box .composer-image-button {
+	width: 40px;
+	height: 40px;
+}
+
+.composer-image-button:hover {
+	background: color-mix(in srgb, var(--panel-2) 92%, var(--ink) 8%);
+	color: var(--ink);
+}
+
+.composer-image-button:disabled,
+.composer-image-button:disabled:hover {
+	opacity: 0.38;
+	cursor: not-allowed;
+	color: var(--ink-muted);
+	background: color-mix(in srgb, var(--panel) 82%, transparent);
+}
+
+.composer-image-button svg {
+	width: 19px;
+	height: 19px;
+}
+
 .composer-send {
 	width: 42px;
 	height: 42px;

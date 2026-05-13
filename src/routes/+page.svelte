@@ -2636,9 +2636,11 @@ onclick={(event) => {
 										{@render modelPicker()}
 										{@render contextMeter()}
 										{@render permissionPicker()}
+									</div>
+									<div class="prompt-toolbar-right">
 										<button
 											type="button"
-											class="toolbar-btn"
+											class="composer-image-button"
 											onclick={() => newImageInput?.click()}
 											title="添加图片"
 											aria-label="添加图片"
@@ -2653,17 +2655,17 @@ onclick={(event) => {
 											onchange={(e) => { if (newImageInput?.files) addImages(newImageInput.files, 'new'); newImageInput && (newImageInput.value = ''); }}
 											hidden
 										/>
+										<button
+											class="composer-send"
+											type="button"
+											onclick={() => void createThread()}
+											disabled={submitting || !(workspacePath || visibleWorkspacePath).trim() || !hasComposerContent(newPrompt, pendingImages)}
+											aria-label={submitting ? 'Starting thread' : 'Start thread'}
+											title={submitting ? 'Starting thread' : 'Start thread'}
+										>
+											{@render sendIcon()}
+										</button>
 									</div>
-									<button
-										class="composer-send"
-										type="button"
-										onclick={() => void createThread()}
-										disabled={submitting || !(workspacePath || visibleWorkspacePath).trim() || !hasComposerContent(newPrompt, pendingImages)}
-										aria-label={submitting ? 'Starting thread' : 'Start thread'}
-										title={submitting ? 'Starting thread' : 'Start thread'}
-									>
-										{@render sendIcon()}
-									</button>
 								</div>
 							</div>
 						</div>
@@ -2727,9 +2729,11 @@ onclick={(event) => {
 									{@render modelPicker()}
 									{@render contextMeter()}
 									{@render permissionPicker()}
+								</div>
+								<div class="prompt-toolbar-right">
 									<button
 										type="button"
-										class="toolbar-btn"
+										class="composer-image-button"
 										onclick={() => replyImageInput?.click()}
 										title="添加图片"
 										aria-label="添加图片"
@@ -2745,8 +2749,6 @@ onclick={(event) => {
 										onchange={(e) => { if (replyImageInput?.files) addImages(replyImageInput.files, 'reply'); replyImageInput && (replyImageInput.value = ''); }}
 										hidden
 									/>
-								</div>
-								<div class="prompt-toolbar-right">
 									{#if interruptableTurnId}
 										<button
 											class="composer-send composer-stop"
